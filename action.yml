@@ -1,0 +1,42 @@
+name: "Try DDC"
+description: "Run a bounded, non-executing DDC preflight on the checked-out repository and produce PDF, Markdown and JSON review artifacts."
+author: "DDC Assurance Lab"
+inputs:
+  root:
+    description: "Repository root to inspect"
+    required: false
+    default: "."
+  out-dir:
+    description: "Directory for review artifacts"
+    required: false
+    default: "try-ddc-output"
+outputs:
+  disposition:
+    description: "Reduced Try DDC disposition"
+    value: ${{ steps.run.outputs.disposition }}
+  result-sha256:
+    description: "SHA-256 of canonical JSON result"
+    value: ${{ steps.run.outputs.result_sha256 }}
+  pdf-sha256:
+    description: "SHA-256 of generated PDF review"
+    value: ${{ steps.run.outputs.pdf_sha256 }}
+runs:
+  using: "composite"
+  steps:
+    - id: run
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "${{ github.action_path }}/try_ddc.py" --root "${{ inputs.root }}" --out-dir "${{ inputs.out-dir }}" | tee /tmp/try-ddc.out
+        disposition="$(sed -n 's/^TRY_DDC_DISPOSITION=//p' /tmp/try-ddc.out | tail -n1)"
+        result_digest="$(sed -n 's/^TRY_DDC_RESULT_SHA256=//p' /tmp/try-ddc.out | tail -n1)"
+        pdf_digest="$(sed -n 's/^TRY_DDC_PDF_SHA256=//p' /tmp/try-ddc.out | tail -n1)"
+        printf 'disposition=%s\n' "$disposition" >> "$GITHUB_OUTPUT"
+        printf 'result_sha256=%s\n' "$result_digest" >> "$GITHUB_OUTPUT"
+        printf 'pdf_sha256=%s\n' "$pdf_digest" >> "$GITHUB_OUTPUT"
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          cat "${{ inputs.out-dir }}/try-ddc-review.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
+branding:
+  icon: "shield"
+  color: "blue"
