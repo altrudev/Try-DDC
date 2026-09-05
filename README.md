@@ -82,6 +82,29 @@ python3 try_ddc.py --root . --out-dir try-ddc-output
 
 Only the Python standard library is required.
 
+## DDCAL Adapter — keep private systems private
+
+This repository also contains the customer-side **DDCAL Adapter** under [`adapter/`](adapter/).
+
+The adapter is for assessments where the customer does not want to send source code or private infrastructure to DDCAL. It runs inside the customer's own machine, CI runner, or controlled environment and exports a bounded **Evidence Capsule** instead of the source itself.
+
+Current registered v0.1 capabilities include:
+
+- local repository/static review;
+- local file-manifest and SHA-256 commitments;
+- anonymous read-only HTTPS observations;
+- allowlisted read-only Ethereum-compatible JSON-RPC observations.
+
+The adapter accepts only registered capability IDs. It does not accept arbitrary shell commands, source-export instructions, transaction-signing requests, or new executable capabilities supplied by a remote assessment plan.
+
+Start here:
+
+- [`adapter/README.md`](adapter/README.md) — customer/operator usage;
+- [`adapter/PROTOCOL.md`](adapter/PROTOCOL.md) — outbound-only managed-service protocol and authority model;
+- [`adapter/examples/assessment-plan.json`](adapter/examples/assessment-plan.json) — bounded plan example.
+
+The intended managed-service connection is outbound HTTPS only. No inbound SSH, remote desktop, Tailscale connection, or open customer firewall port is required.
+
 ## Result semantics
 
 Possible reduced-review dispositions are:
@@ -94,7 +117,9 @@ Possible reduced-review dispositions are:
 
 ## Assurance boundary
 
-This repository provides a reduced Try DDC review tool. Its output is **not** a DDC Assurance Lab assessment, certification, accredited result, penetration test, security guarantee, or authorization to execute a repository.
+This repository provides a reduced Try DDC review tool and the customer-side evidence adapter. Their outputs are **not** DDC Assurance Lab assessments, certifications, accredited results, penetration tests, security guarantees, or authorizations to execute a repository.
+
+Evidence Capsules remain evidence. Customer-facing DDCAL assurance reports are produced and released separately through the DDCAL controlled-document and report-acceptance system.
 
 For a defined DDCAL assessment using broader evidence and an explicit scope, see:
 
@@ -102,6 +127,8 @@ https://ddcal.ca/services.html
 
 ## Security and privacy model
 
-The default action requests only `contents: read`. The recommended checkout configuration disables persisted GitHub credentials. The analyzer itself makes no network request.
+The default action requests only `contents: read`. The recommended checkout configuration disables persisted GitHub credentials. The Try DDC analyzer itself makes no network request.
+
+Network-capable adapter capabilities are explicit and capability-specific. Review the adapter plan and source before authorizing them.
 
 Review this repository and pin the exact commit you choose to trust before using it on sensitive code.
