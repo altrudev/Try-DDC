@@ -1,0 +1,35 @@
+name: Try DDC
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  try-ddc:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact repository state
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Replace this placeholder with an exact commit SHA from altrudev/Try-DDC.
+      - name: Run Try DDC
+        id: ddc
+        uses: altrudev/Try-DDC@REPLACE_WITH_EXACT_COMMIT_SHA
+
+      - name: Upload review artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: try-ddc-review-${{ github.sha }}
+          path: |
+            try-ddc-output/try-ddc-review.pdf
+            try-ddc-output/try-ddc-review.pdf.sha256
+            try-ddc-output/try-ddc-review.md
+            try-ddc-output/try-ddc-review.json
+            try-ddc-output/try-ddc-review.json.sha256
+          if-no-files-found: error
+          retention-days: 14
