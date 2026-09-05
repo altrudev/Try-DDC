@@ -451,7 +451,6 @@ def build_pdf(result: dict[str, Any], result_digest: str) -> bytes:
     lines += wrap(result["boundary"])
     lines += ["", "Full DDCAL services: https://ddcal.ca/services.html"]
 
-    # Replace characters outside the built-in PDF font's practical range.
     safe_lines = [line.encode("latin-1", "replace").decode("latin-1") for line in lines]
     per_page = 48
     pages = [safe_lines[i:i + per_page] for i in range(0, len(safe_lines), per_page)] or [[""]]
@@ -513,7 +512,7 @@ def main() -> int:
     md_name = "try-ddc-review.md"
     pdf_name = "try-ddc-review.pdf"
 
-    (out / json_name).write_bytes(canonical + b"\n")
+    (out / json_name).write_bytes(canonical)
     (out / md_name).write_text(markdown(result, result_digest), encoding="utf-8")
 
     pdf = build_pdf(result, result_digest)
