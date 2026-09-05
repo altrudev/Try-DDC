@@ -20,12 +20,16 @@ It does **not**:
 
 Each run produces:
 
-- `try-ddc-review.md` — human-readable review;
+- `try-ddc-review.pdf` — human-readable PDF review;
+- `try-ddc-review.pdf.sha256` — SHA-256 for the final PDF plus the canonical-result digest;
+- `try-ddc-review.md` — human-readable Markdown review;
 - `try-ddc-review.json` — deterministic machine-readable result;
 - `try-ddc-review.json.sha256` — SHA-256 for the canonical JSON result;
-- the same Markdown review in the GitHub Actions job summary.
+- the Markdown review in the GitHub Actions job summary.
 
-The hosted Try DDC page at https://ddcal.ca/try.html may also provide a PDF review artifact.
+The SHA-256 values provide tamper evidence. They do not by themselves authenticate DDCAL as the issuer and do not turn a Try DDC result into a certification or formal assessment.
+
+The hosted version is available at https://ddcal.ca/try.html.
 
 ## GitHub Actions
 
@@ -58,6 +62,8 @@ jobs:
         with:
           name: try-ddc-review-${{ github.sha }}
           path: |
+            try-ddc-output/try-ddc-review.pdf
+            try-ddc-output/try-ddc-review.pdf.sha256
             try-ddc-output/try-ddc-review.md
             try-ddc-output/try-ddc-review.json
             try-ddc-output/try-ddc-review.json.sha256
@@ -65,6 +71,8 @@ jobs:
 ```
 
 Pinning to an exact commit lets you inspect precisely what analyzer code you are trusting.
+
+A copyable workflow example is in [`examples/try-ddc.yml`](examples/try-ddc.yml).
 
 ## Local use
 
