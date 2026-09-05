@@ -1,0 +1,30 @@
+{
+  "schema": "ddcal.assessment-plan.v1",
+  "job_id": "ddcal_job_example1234",
+  "profile_id": "ddcal.repo.private.v1",
+  "expires_unix": 1893456000,
+  "target": {
+    "kind": "registered-local-root",
+    "label": "customer-project"
+  },
+  "capabilities": [
+    {
+      "id": "repo.static",
+      "params": {
+        "root": "."
+      }
+    },
+    {
+      "id": "filesystem.manifest",
+      "params": {
+        "paths": [
+          "."
+        ]
+      }
+    }
+  ],
+  "export_policy": {
+    "allow_source": false,
+    "max_excerpt_bytes": 0
+  }
+}
