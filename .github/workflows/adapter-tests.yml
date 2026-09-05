@@ -1,0 +1,30 @@
+name: DDCAL Adapter Tests
+
+on:
+  push:
+    paths:
+      - "adapter/**"
+      - ".github/workflows/adapter-tests.yml"
+  pull_request:
+    paths:
+      - "adapter/**"
+      - ".github/workflows/adapter-tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  adapter-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Python syntax check
+        run: python3 -m py_compile adapter/ddcal_adapter.py adapter/tests/test_adapter.py
+
+      - name: Authority-boundary tests
+        run: python3 adapter/tests/test_adapter.py
