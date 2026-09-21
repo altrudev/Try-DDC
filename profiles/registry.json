@@ -1,0 +1,47 @@
+{
+  "schema": "try-ddc-profile-registry/1",
+  "profiles": [
+    {
+      "id": "software.repository.v2",
+      "version": "2",
+      "state": "IMPLEMENTING",
+      "public": true,
+      "execution_authority": false
+    },
+    {
+      "id": "blockchain.evm.contract.v1",
+      "version": "1",
+      "state": "IMPLEMENTING",
+      "public": false,
+      "execution_authority": false
+    },
+    {
+      "id": "blockchain.evm.transaction.v1",
+      "version": "1",
+      "state": "IMPLEMENTING",
+      "public": false,
+      "execution_authority": false
+    },
+    {
+      "id": "evidence.bundle.v1",
+      "version": "1",
+      "state": "DESIGNED",
+      "public": false,
+      "execution_authority": false
+    },
+    {
+      "id": "agent.trace.v1",
+      "version": "1",
+      "state": "DESIGNED",
+      "public": false,
+      "execution_authority": false
+    },
+    {
+      "id": "protocol.mcp.observe.v1",
+      "version": "1",
+      "state": "DESIGNED",
+      "public": false,
+      "execution_authority": false
+    }
+  ]
+}
