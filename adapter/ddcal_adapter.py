@@ -610,6 +610,7 @@ def run_solana_transaction_observe(_repo_root: Path, params: dict[str, Any], _wo
         "genesis_hash_after": genesis_after.get("result"),
         "signature_status": signature_status,
         "transaction": transaction,
+        "block_slot": transaction.get("slot") if isinstance(transaction, dict) else None,
         "block_before": block_before,
         "block_after": block_after,
         "context_commitment": context_commitment,
