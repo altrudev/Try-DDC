@@ -18,6 +18,7 @@ from .model import ValidationError
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 _HEX40_RE = re.compile(r"^[0-9a-f]{40}$")
+_SIGNATURE_DOMAIN = b"TRY-DDC-SIGNED-RESULT-V1\\0"
 
 
 def _utc(value: str) -> str:
@@ -77,6 +78,11 @@ def _sign_bytes(payload: bytes, private_key_path: Path) -> bytes:
     path = private_key_path.resolve()
     if not path.is_file():
         raise ValidationError("private-key-missing")
+    try:
+        if path.stat().st_mode & 0o077:
+            raise ValidationError("private-key-permissions-too-broad")
+    except OSError as exc:
+        raise ValidationError("private-key-stat-failed") from exc
     with tempfile.TemporaryDirectory() as td:
         message = Path(td) / "message.bin"
         signature = Path(td) / "signature.bin"
@@ -188,6 +194,12 @@ def build_signature_payload(
         raise ValidationError("result-identity-invalid")
     if not isinstance(profile, dict) or not isinstance(capture, dict):
         raise ValidationError("result-binding-invalid")
+    profile_id = profile.get("id")
+    profile_version = profile.get("version")
+    if not isinstance(profile_id, str) or not _ID_RE.fullmatch(profile_id):
+        raise ValidationError("profile-id-invalid")
+    if not isinstance(profile_version, str) or not _ID_RE.fullmatch(profile_version):
+        raise ValidationError("profile-version-invalid")
     if not isinstance(result_revision, int) or result_revision < 1:
         raise ValidationError("result-revision-invalid")
 
@@ -213,8 +225,8 @@ def build_signature_payload(
         "result_digest": result_digest,
         "evidence_root": evidence_root,
         "profile": {
-            "id": profile.get("id"),
-            "version": profile.get("version"),
+            "id": profile_id,
+            "version": profile_version,
             "digest": profile_digest,
         },
         "capabilities": _capability_binding(result),
@@ -251,7 +263,7 @@ def sign_result(
         signer_fingerprint_value=fingerprint,
         signer_role=signer_role,
     )
-    payload_bytes = canonical_bytes(payload)
+    payload_bytes = _SIGNATURE_DOMAIN + canonical_bytes(payload)
     signature = _sign_bytes(payload_bytes, private_key_path)
     if not _verify_bytes(payload_bytes, signature, public_key_path):
         raise ValidationError("signing-key-pair-mismatch")
@@ -307,4 +319,4 @@ def verify_signed_result(
         signature = base64.b64decode(sig_b64, validate=True)
     except Exception:
         return False
-    return _verify_bytes(canonical_bytes(payload), signature, public_key_path)
+    return _verify_bytes(_SIGNATURE_DOMAIN + canonical_bytes(payload), signature, public_key_path)
