@@ -25,11 +25,62 @@ CAPTURE_DIGEST = sha256_digest(CAPTURE_DESCRIPTOR)
 
 _NONCE_RE = re.compile(r"^[0-9a-f]{32,128}$")
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+
+_TOP_FIELDS = {
+    "schema", "capsule_id", "target_id", "nonce", "created_at",
+    "producer", "export", "evidence", "capsule_digest",
+}
+_PRODUCER_FIELDS = {"product", "version", "mode", "plan_digest", "profile_id"}
+_EXPORT_FIELDS = {
+    "source_code_exported",
+    "source_excerpts_exported",
+    "arbitrary_shell_authority",
+    "private_key_authority",
+    "transaction_signing_authority",
+    "transaction_broadcast_authority",
+    "raw_capability_payloads_exported",
+}
+_EVIDENCE_FIELDS = {
+    "evidence_id",
+    "capability_id",
+    "classification",
+    "status",
+    "digest",
+    "freshness_status",
+    "freshness_policy",
+}
+_REGISTERED_PRODUCER_CAPABILITIES = {
+    "repo.static",
+    "filesystem.manifest",
+    "api.http.readonly",
+    "blockchain.rpc.readonly",
+    "blockchain.evm.contract.observe",
+    "blockchain.evm.transaction.observe",
+    "agent.replay.report",
+    "protocol.mcp.observe",
+}
+_ALLOWED_STATUSES = {
+    "COMPLETE",
+    "INCOMPLETE",
+    "UNSUPPORTED",
+    "RATE_LIMITED",
+    "CAPTURE_FAILED",
+    "BLOCKED",
+}
+_ALLOWED_FRESHNESS = {"ESTABLISHED", "PARTIALLY_ESTABLISHED", "UNRESOLVED", "STALE"}
+
+
+def _reject_unknown_fields(value: dict[str, Any], allowed: set[str], label: str) -> None:
+    unknown = set(value) - allowed
+    if unknown:
+        raise ValidationError(f"{label}-unknown-field:" + ",".join(sorted(unknown)))
 
 
 def _validate_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(capsule, dict):
         raise ValidationError("capsule-must-be-object")
+    _reject_unknown_fields(capsule, _TOP_FIELDS, "capsule")
     if capsule.get("schema") != "try-ddc-evidence-capsule/2":
         raise ValidationError("unsupported-capsule-schema")
 
@@ -38,6 +89,8 @@ def _validate_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
     nonce = capsule.get("nonce")
     created_at = capsule.get("created_at")
     evidence = capsule.get("evidence")
+    producer = capsule.get("producer", {})
+    export = capsule.get("export", {})
 
     if not isinstance(capsule_id, str) or not re.fullmatch(r"capsule:[0-9a-f]{32}", capsule_id):
         raise ValidationError("invalid-capsule-id")
@@ -49,6 +102,25 @@ def _validate_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
         raise ValidationError("invalid-capsule-created-at")
     if not isinstance(evidence, list) or not evidence:
         raise ValidationError("capsule-evidence-empty")
+    if not isinstance(producer, dict):
+        raise ValidationError("capsule-producer-invalid")
+    if not isinstance(export, dict):
+        raise ValidationError("capsule-export-invalid")
+
+    _reject_unknown_fields(producer, _PRODUCER_FIELDS, "capsule-producer")
+    _reject_unknown_fields(export, _EXPORT_FIELDS, "capsule-export")
+    for key, value in producer.items():
+        if not isinstance(value, str):
+            raise ValidationError(f"capsule-producer-{key}-invalid")
+        if len(value) > 256:
+            raise ValidationError(f"capsule-producer-{key}-too-long")
+    if producer.get("plan_digest") is not None and not _DIGEST_RE.fullmatch(producer["plan_digest"]):
+        raise ValidationError("capsule-producer-plan-digest-invalid")
+    if producer.get("profile_id") is not None and not _ID_RE.fullmatch(producer["profile_id"]):
+        raise ValidationError("capsule-producer-profile-id-invalid")
+    for key, value in export.items():
+        if value is not False:
+            raise ValidationError(f"capsule-export-{key}-must-be-false")
 
     unsigned = dict(capsule)
     supplied_digest = unsigned.pop("capsule_digest", None)
@@ -61,8 +133,13 @@ def _validate_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
     for item in evidence:
         if not isinstance(item, dict):
             raise ValidationError("capsule-evidence-item-invalid")
+        _reject_unknown_fields(item, _EVIDENCE_FIELDS, "capsule-evidence")
         eid = item.get("evidence_id")
         digest = item.get("digest")
+        capability_id = item.get("capability_id")
+        status = item.get("status")
+        freshness = item.get("freshness_status", "UNRESOLVED")
+        freshness_policy = item.get("freshness_policy")
         if not isinstance(eid, str) or not re.fullmatch(r"evidence:[a-z0-9._:-]{1,96}", eid):
             raise ValidationError("capsule-evidence-id-invalid")
         if eid in seen:
@@ -72,8 +149,16 @@ def _validate_capsule(capsule: dict[str, Any]) -> dict[str, Any]:
             raise ValidationError("capsule-evidence-digest-invalid")
         if item.get("classification") not in {"PUBLIC", "CUSTOMER_PRIVATE", "SENSITIVE"}:
             raise ValidationError("capsule-classification-invalid")
-        if "raw_source" in item or "secret" in item:
-            raise ValidationError("capsule-prohibited-field")
+        if capability_id not in _REGISTERED_PRODUCER_CAPABILITIES:
+            raise ValidationError("capsule-unregistered-producer-capability")
+        if status not in _ALLOWED_STATUSES:
+            raise ValidationError("capsule-evidence-status-invalid")
+        if freshness not in _ALLOWED_FRESHNESS:
+            raise ValidationError("capsule-evidence-freshness-invalid")
+        if freshness_policy is not None and (
+            not isinstance(freshness_policy, str) or len(freshness_policy) > 256
+        ):
+            raise ValidationError("capsule-evidence-freshness-policy-invalid")
     return capsule
 
 
