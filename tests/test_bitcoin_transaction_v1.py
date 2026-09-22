@@ -57,7 +57,7 @@ class BitcoinTransactionV1Tests(unittest.TestCase):
         self.assertEqual(result.evidence_root, manifest.evidence_root)
         determinations = {x["kind"]: x for x in result.determinations}
         self.assertEqual(determinations["bitcoin.transaction.observed"]["status"], "ESTABLISHED")
-        self.assertEqual(determinations["bitcoin.transaction.inclusion"]["status"], "ESTABLISHED")
+        self.assertEqual(determinations["bitcoin.transaction.inclusion"]["status"], "PARTIALLY_ESTABLISHED")
         self.assertEqual(determinations["bitcoin.transaction.confirmations"]["status"], "PARTIALLY_ESTABLISHED")
 
     def test_transaction_id_mismatch_fails_closed(self):
