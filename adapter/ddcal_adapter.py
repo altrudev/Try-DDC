@@ -11,6 +11,7 @@ Current v0.1 capabilities:
 - api.http.readonly          -> anonymous GET/HEAD/OPTIONS against an explicit HTTPS URL
 - blockchain.rpc.readonly    -> allowlisted read-only Ethereum JSON-RPC methods
 - blockchain.evm.contract.observe -> block-pinned EVM contract/proxy observation
+- blockchain.evm.transaction.observe -> read-only EVM transaction/receipt/inclusion observation
 
 The output is a DDCAL Evidence Capsule. Optional HMAC signing uses a local key
 file that is never supplied by the remote plan.
@@ -62,6 +63,7 @@ CAPABILITIES = {
     "api.http.readonly": "Anonymous HTTPS GET/HEAD/OPTIONS observation",
     "blockchain.rpc.readonly": "Allowlisted read-only Ethereum-compatible JSON-RPC observation",
     "blockchain.evm.contract.observe": "Block-pinned read-only EVM contract and common proxy observation",
+    "blockchain.evm.transaction.observe": "Read-only EVM transaction, receipt, and inclusion observation",
 }
 
 
@@ -491,12 +493,108 @@ def run_evm_contract_observe(_repo_root: Path, params: dict[str, Any], _work: Pa
     }
 
 
+def _evm_tx_hash(value: Any) -> str:
+    text = str(value or "")
+    if not re.fullmatch(r"0x[0-9a-fA-F]{64}", text):
+        fail("blockchain.evm.transaction.observe requires a 32-byte transaction hash")
+    return text.lower()
+
+
+def run_evm_transaction_observe(_repo_root: Path, params: dict[str, Any], _work: Path) -> dict[str, Any]:
+    rpc_url = validate_https_url(str(params.get("rpc_url") or ""))
+    tx_hash = _evm_tx_hash(params.get("transaction_hash"))
+
+    request_id = 1
+    def call(method: str, rpc_params: list[Any]) -> dict[str, Any]:
+        nonlocal request_id
+        result = _rpc_request(rpc_url, method, rpc_params, request_id)
+        request_id += 1
+        return result
+
+    chain = call("eth_chainId", [])
+    tx = call("eth_getTransactionByHash", [tx_hash])
+    receipt = call("eth_getTransactionReceipt", [tx_hash])
+    if not chain.get("ok") or not tx.get("ok") or not receipt.get("ok"):
+        return {
+            "capability": "blockchain.evm.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "transaction-query-unavailable",
+            "transaction_signing_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    tx_value = tx.get("result")
+    receipt_value = receipt.get("result")
+    block_before = None
+    block_after = None
+    finality_state = "UNRESOLVED"
+
+    if isinstance(receipt_value, dict):
+        block_number = receipt_value.get("blockNumber")
+        if not isinstance(block_number, str) or not re.fullmatch(r"0x[0-9a-fA-F]+", block_number):
+            return {
+                "capability": "blockchain.evm.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "receipt-missing-block-number",
+                "transaction_signing_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+
+        first = call("eth_getBlockByNumber", [block_number, False])
+        second = call("eth_getBlockByNumber", [block_number, False])
+        if not first.get("ok") or not second.get("ok"):
+            return {
+                "capability": "blockchain.evm.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "inclusion-block-unavailable",
+                "transaction_signing_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+        block_before = first.get("result")
+        block_after = second.get("result")
+        if not isinstance(block_before, dict) or not isinstance(block_after, dict):
+            return {
+                "capability": "blockchain.evm.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "inclusion-block-invalid",
+                "transaction_signing_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+
+    observation = {
+        "chain_id": str(chain.get("result") or "").lower(),
+        "transaction_hash": tx_hash,
+        "transaction": tx_value,
+        "receipt": receipt_value,
+        "block_before": block_before,
+        "block_after": block_after,
+        "rpc_origin": urlparse(rpc_url).netloc,
+        "finality_state": finality_state,
+        "request_count": request_id - 1,
+    }
+    return {
+        "capability": "blockchain.evm.transaction.observe",
+        "status": "COMPLETE",
+        "observation": observation,
+        "transaction_signing_authority": False,
+        "transaction_broadcast_authority": False,
+        "private_key_authority": False,
+        "arbitrary_rpc_authority": False,
+        "source_exported": False,
+    }
+
+
 RUNNERS = {
     "repo.static": run_repo_static,
     "filesystem.manifest": run_filesystem_manifest,
     "api.http.readonly": run_http_readonly,
     "blockchain.rpc.readonly": run_blockchain_rpc,
     "blockchain.evm.contract.observe": run_evm_contract_observe,
+    "blockchain.evm.transaction.observe": run_evm_transaction_observe,
 }
 
 
