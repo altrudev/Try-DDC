@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
+from tryddc_v2.profiles import repository as repository_profile
 from tryddc_v2.profiles.repository import run_repository_v2
 
 
@@ -61,6 +63,28 @@ class RepositoryV2Tests(unittest.TestCase):
         )
         self.assertEqual(legacy["disposition"], "BLOCKED")
         self.assertEqual(result.risk_disposition, "HIGH_RISK_OBSERVED")
+
+    def test_capture_to_analysis_mutation_fails_closed(self):
+        root = self.make_repo()
+        original_scan = repository_profile.legacy.scan
+
+        def mutating_scan(path):
+            result = original_scan(path)
+            (path / "app.py").write_text("print('changed')\n", encoding="utf-8")
+            return result
+
+        with patch.object(repository_profile.legacy, "scan", side_effect=mutating_scan):
+            _manifest, result, _legacy = run_repository_v2(
+                root,
+                frozen_at="2026-09-22T01:00:00Z",
+                analysis_time="2026-09-22T01:00:01Z",
+                implementation_revision="test-revision",
+            )
+        self.assertEqual(result.analysis_status, "CAPTURE_FAILED")
+        self.assertEqual(result.evidentiary_status, "UNRESOLVED")
+        self.assertFalse(result.minimum_coverage_met)
+        self.assertTrue(result.contradictions)
+        self.assertFalse(result.synthesis["capture_to_analysis_stable"])
 
     def test_no_high_risk_requires_legacy_minimum_coverage(self):
         root = self.make_repo()
