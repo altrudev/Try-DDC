@@ -159,6 +159,107 @@ class AdapterV2BridgeTests(unittest.TestCase):
         self.assertEqual(result["status"], "COMPLETE")
         self.assertIsNone(result["observation"]["transaction"])
 
+    def test_solana_observer_uses_only_read_methods_and_never_signs_submits_or_simulates(self):
+        self.assertIn("blockchain.solana.transaction.observe", adapter.CAPABILITIES)
+        calls = []
+        signature = "3" * 88
+        genesis = "4" * 44
+        blockhash = "5" * 44
+        previous = "6" * 44
+
+        def fake_rpc(_url, method, params, request_id):
+            calls.append((method, params, request_id))
+            if method == "getGenesisHash":
+                return {"ok": True, "result": genesis}
+            if method == "getSignatureStatuses":
+                return {"ok": True, "result": {"context": {"slot": 13000}, "value": [{
+                    "slot": 12345,
+                    "confirmations": None,
+                    "confirmationStatus": "finalized",
+                    "err": None,
+                }]}}
+            if method == "getSlot":
+                return {"ok": True, "result": 13000 + sum(1 for x in calls if x[0] == "getSlot")}
+            if method == "getTransaction":
+                return {"ok": True, "result": {
+                    "slot": 12345,
+                    "blockTime": 1790090000,
+                    "version": 0,
+                    "meta": {"err": None, "fee": 5000, "computeUnitsConsumed": 1000},
+                    "transaction": {"signatures": [signature], "message": {"accountKeys": [], "instructions": []}},
+                }}
+            if method == "getBlock":
+                return {"ok": True, "result": {
+                    "blockhash": blockhash,
+                    "previousBlockhash": previous,
+                    "blockHeight": 12000,
+                    "blockTime": 1790090000,
+                    "signatures": [signature],
+                }}
+            raise AssertionError(method)
+
+        original = adapter._solana_rpc_request
+        adapter._solana_rpc_request = fake_rpc
+        try:
+            result = adapter.run_solana_transaction_observe(
+                Path("."),
+                {"rpc_url": "https://solana.example", "signature": signature},
+                Path("."),
+            )
+        finally:
+            adapter._solana_rpc_request = original
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertFalse(result["transaction_signing_authority"])
+        self.assertFalse(result["transaction_broadcast_authority"])
+        self.assertFalse(result["transaction_simulation_authority"])
+        self.assertFalse(result["private_key_authority"])
+        self.assertFalse(result["arbitrary_rpc_authority"])
+        methods = [item[0] for item in calls]
+        self.assertEqual(
+            methods,
+            ["getGenesisHash", "getSignatureStatuses", "getSlot", "getTransaction", "getBlock", "getBlock", "getSlot", "getGenesisHash"],
+        )
+        for forbidden in ("sendTransaction", "simulateTransaction", "requestAirdrop"):
+            self.assertNotIn(forbidden, methods)
+            self.assertNotIn(forbidden, adapter.SOLANA_READONLY_RPC_METHODS)
+
+    def test_solana_provider_absence_is_bounded_and_rechecked(self):
+        signature = "3" * 88
+        genesis = "4" * 44
+        calls = []
+
+        def fake_rpc(_url, method, params, request_id):
+            calls.append(method)
+            if method == "getGenesisHash":
+                return {"ok": True, "result": genesis}
+            if method == "getSignatureStatuses":
+                return {"ok": True, "result": {"context": {"slot": 13000}, "value": [None]}}
+            if method == "getSlot":
+                return {"ok": True, "result": 13000}
+            if method == "getTransaction":
+                return {"ok": True, "result": None}
+            raise AssertionError(method)
+
+        original = adapter._solana_rpc_request
+        adapter._solana_rpc_request = fake_rpc
+        try:
+            result = adapter.run_solana_transaction_observe(
+                Path("."),
+                {"rpc_url": "https://solana.example", "signature": signature},
+                Path("."),
+            )
+        finally:
+            adapter._solana_rpc_request = original
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertIsNone(result["observation"]["signature_status"])
+        self.assertIsNone(result["observation"]["transaction"])
+        self.assertEqual(
+            calls,
+            ["getGenesisHash", "getSignatureStatuses", "getSlot", "getTransaction", "getSlot", "getGenesisHash"],
+        )
+
     def test_mcp_observer_uses_only_discovery_and_list_methods(self):
         self.assertIn("protocol.mcp.observe", adapter.CAPABILITIES)
         calls = []
