@@ -124,6 +124,22 @@ def _verify_bytes(payload: bytes, signature: bytes, public_key_path: Path) -> bo
         return True
 
 
+def _normalized_result_payload(result: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise ValidationError("result-must-be-object")
+    normalized = dict(result)
+    supplied = normalized.pop("result_digest", None)
+    if normalized.get("schema") != "try-ddc-result/2":
+        raise ValidationError("unsupported-result-schema")
+    computed = sha256_digest(normalized)
+    if supplied is not None:
+        if not isinstance(supplied, str) or not _SHA256_RE.fullmatch(supplied):
+            raise ValidationError("result-digest-invalid")
+        if supplied != computed:
+            raise ValidationError("result-digest-mismatch")
+    return normalized
+
+
 def _capability_binding(result: dict[str, Any]) -> list[dict[str, str]]:
     capabilities = result.get("capabilities", [])
     if not isinstance(capabilities, list):
@@ -161,8 +177,7 @@ def build_signature_payload(
     signer_fingerprint_value: str,
     signer_role: str = "try-ddc-result-signer",
 ) -> dict[str, Any]:
-    if not isinstance(result, dict) or result.get("schema") != "try-ddc-result/2":
-        raise ValidationError("unsupported-result-schema")
+    result = _normalized_result_payload(result)
     result_id = result.get("result_id")
     case_id = result.get("case_id")
     target_id = result.get("target_id")
