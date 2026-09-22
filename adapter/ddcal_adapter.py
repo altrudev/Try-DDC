@@ -45,6 +45,14 @@ MAX_MANIFEST_FILES = 20000
 MAX_HTTP_BYTES = 512 * 1024
 MAX_RPC_BYTES = 1024 * 1024
 
+SOLANA_READONLY_RPC_METHODS = {
+    "getGenesisHash",
+    "getSignatureStatuses",
+    "getTransaction",
+    "getBlock",
+    "getSlot",
+}
+
 BITCOIN_READONLY_RPC_METHODS = {
     "getblockchaininfo",
     "getrawtransaction",
@@ -77,6 +85,7 @@ CAPABILITIES = {
     "blockchain.evm.contract.observe": "Block-pinned read-only EVM contract and common proxy observation",
     "blockchain.evm.transaction.observe": "Read-only EVM transaction, receipt, and inclusion observation",
     "blockchain.bitcoin.transaction.observe": "Read-only Bitcoin transaction, inclusion, and confirmation observation",
+    "blockchain.solana.transaction.observe": "Read-only Solana transaction, slot inclusion, and commitment observation",
     "agent.replay.report": "Local Agent Replay reconstruction binding into Try DDC agent.trace.v1",
     "protocol.mcp.observe": "Anonymous read-only MCP discovery and advertised-surface observation",
 }
@@ -385,6 +394,240 @@ def _rpc_request(rpc_url: str, method: str, params: list[Any], request_id: int) 
         "ok": True,
         "result": decoded.get("result"),
         "response_sha256": sha256_bytes(raw),
+    }
+
+
+def _solana_rpc_request(rpc_url: str, method: str, params: list[Any], request_id: int) -> dict[str, Any]:
+    if method not in SOLANA_READONLY_RPC_METHODS:
+        fail(f"Solana RPC method is not allowlisted as read-only: {method}")
+    payload = canonical_bytes({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+    req = Request(rpc_url, method="POST", data=payload, headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": f"DDCAL-Adapter/{VERSION}",
+    })
+
+    from urllib.request import build_opener, HTTPRedirectHandler
+
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    try:
+        with build_opener(NoRedirect()).open(req, timeout=20) as response:
+            raw = response.read(MAX_RPC_BYTES + 1)
+    except HTTPError as exc:
+        return {
+            "ok": False,
+            "status": "HTTP_ERROR",
+            "http_status": exc.code,
+            "redirect_location": exc.headers.get("Location"),
+        }
+    except URLError:
+        return {"ok": False, "status": "TRANSPORT_UNAVAILABLE"}
+    if len(raw) > MAX_RPC_BYTES:
+        return {"ok": False, "status": "RESPONSE_TOO_LARGE"}
+
+    def reject_duplicates(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError("duplicate-json-key")
+            out[key] = value
+        return out
+
+    try:
+        decoded = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except (json.JSONDecodeError, ValueError):
+        return {"ok": False, "status": "INVALID_JSON", "response_sha256": sha256_bytes(raw)}
+    if not isinstance(decoded, dict):
+        return {"ok": False, "status": "INVALID_RPC_RESPONSE"}
+    if decoded.get("error") is not None:
+        return {
+            "ok": False,
+            "status": "RPC_ERROR",
+            "response_sha256": sha256_bytes(raw),
+        }
+    if "result" not in decoded:
+        return {"ok": False, "status": "RPC_RESULT_MISSING"}
+    return {
+        "ok": True,
+        "result": decoded.get("result"),
+        "response_sha256": sha256_bytes(raw),
+    }
+
+
+def _solana_signature(value: Any) -> str:
+    text = str(value or "")
+    if not re.fullmatch(r"[1-9A-HJ-NP-Za-km-z]{64,128}", text):
+        fail("blockchain.solana.transaction.observe requires a base58 transaction signature")
+    return text
+
+
+def run_solana_transaction_observe(_repo_root: Path, params: dict[str, Any], _work: Path) -> dict[str, Any]:
+    rpc_url = validate_https_url(str(params.get("rpc_url") or ""))
+    signature = _solana_signature(params.get("signature"))
+    request_id = 1
+
+    def call(method: str, rpc_params: list[Any]) -> dict[str, Any]:
+        nonlocal request_id
+        result = _solana_rpc_request(rpc_url, method, rpc_params, request_id)
+        request_id += 1
+        return result
+
+    genesis_before = call("getGenesisHash", [])
+    status_response = call("getSignatureStatuses", [[signature], {"searchTransactionHistory": True}])
+    if not genesis_before.get("ok") or not status_response.get("ok"):
+        return {
+            "capability": "blockchain.solana.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "genesis-or-signature-status-unavailable",
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "transaction_simulation_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    statuses = status_response.get("result")
+    if not isinstance(statuses, dict) or not isinstance(statuses.get("value"), list) or len(statuses["value"]) != 1:
+        return {
+            "capability": "blockchain.solana.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "signature-status-shape-invalid",
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "transaction_simulation_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+    signature_status = statuses["value"][0]
+
+    context_commitment = "finalized"
+    if isinstance(signature_status, dict) and signature_status.get("confirmationStatus") == "confirmed":
+        context_commitment = "confirmed"
+    elif isinstance(signature_status, dict) and signature_status.get("confirmationStatus") == "processed":
+        context_commitment = "confirmed"
+
+    context_before = call("getSlot", [{"commitment": context_commitment}])
+    transaction_response = call("getTransaction", [
+        signature,
+        {
+            "encoding": "json",
+            "commitment": context_commitment,
+            "maxSupportedTransactionVersion": 0,
+        },
+    ])
+    if not context_before.get("ok") or not transaction_response.get("ok"):
+        return {
+            "capability": "blockchain.solana.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "context-or-transaction-unavailable",
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "transaction_simulation_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    transaction = transaction_response.get("result")
+    block_before = None
+    block_after = None
+
+    if signature_status is None and transaction is None:
+        context_after = call("getSlot", [{"commitment": context_commitment}])
+        genesis_after = call("getGenesisHash", [])
+        if not context_after.get("ok") or not genesis_after.get("ok"):
+            return {
+                "capability": "blockchain.solana.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "absence-context-recheck-unavailable",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "transaction_simulation_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+    else:
+        if not isinstance(signature_status, dict) or not isinstance(transaction, dict):
+            return {
+                "capability": "blockchain.solana.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "status-transaction-presence-mismatch",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "transaction_simulation_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+        slot = transaction.get("slot")
+        if not isinstance(slot, int) or isinstance(slot, bool) or slot < 0:
+            return {
+                "capability": "blockchain.solana.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "transaction-slot-invalid",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "transaction_simulation_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+        block_config = {
+            "commitment": context_commitment,
+            "transactionDetails": "signatures",
+            "rewards": False,
+            "maxSupportedTransactionVersion": 0,
+        }
+        first = call("getBlock", [slot, block_config])
+        second = call("getBlock", [slot, block_config])
+        context_after = call("getSlot", [{"commitment": context_commitment}])
+        genesis_after = call("getGenesisHash", [])
+        if (
+            not first.get("ok")
+            or not second.get("ok")
+            or not context_after.get("ok")
+            or not genesis_after.get("ok")
+            or not isinstance(first.get("result"), dict)
+            or not isinstance(second.get("result"), dict)
+        ):
+            return {
+                "capability": "blockchain.solana.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "block-or-context-recheck-unavailable",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "transaction_simulation_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+        keep = ("blockhash", "previousBlockhash", "blockHeight", "blockTime", "signatures")
+        block_before = {key: first["result"].get(key) for key in keep}
+        block_after = {key: second["result"].get(key) for key in keep}
+
+    observation = {
+        "signature": signature,
+        "genesis_hash_before": genesis_before.get("result"),
+        "genesis_hash_after": genesis_after.get("result"),
+        "signature_status": signature_status,
+        "transaction": transaction,
+        "block_before": block_before,
+        "block_after": block_after,
+        "context_commitment": context_commitment,
+        "context_slot_before": context_before.get("result"),
+        "context_slot_after": context_after.get("result"),
+        "rpc_origin": urlparse(rpc_url).netloc,
+        "request_count": request_id - 1,
+    }
+    return {
+        "capability": "blockchain.solana.transaction.observe",
+        "status": "COMPLETE",
+        "observation": observation,
+        "transaction_signing_authority": False,
+        "transaction_broadcast_authority": False,
+        "transaction_simulation_authority": False,
+        "private_key_authority": False,
+        "arbitrary_rpc_authority": False,
+        "source_exported": False,
     }
 
 
@@ -1202,6 +1445,7 @@ RUNNERS = {
     "blockchain.evm.contract.observe": run_evm_contract_observe,
     "blockchain.evm.transaction.observe": run_evm_transaction_observe,
     "blockchain.bitcoin.transaction.observe": run_bitcoin_transaction_observe,
+    "blockchain.solana.transaction.observe": run_solana_transaction_observe,
     "agent.replay.report": run_agent_replay_report,
     "protocol.mcp.observe": run_mcp_observe,
 }
@@ -1246,7 +1490,11 @@ def _v2_target_id(plan: dict[str, Any]) -> str:
 def _v2_classification(capability_id: str) -> str:
     # Network chain observations are public protocol data. Local repository and
     # filesystem commitments remain customer-private by default.
-    if capability_id.startswith("blockchain.evm.") or capability_id.startswith("blockchain.bitcoin."):
+    if (
+        capability_id.startswith("blockchain.evm.")
+        or capability_id.startswith("blockchain.bitcoin.")
+        or capability_id.startswith("blockchain.solana.")
+    ):
         return "PUBLIC"
     return "CUSTOMER_PRIVATE"
 
