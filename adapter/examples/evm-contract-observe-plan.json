@@ -1,0 +1,24 @@
+{
+  "schema": "ddcal.assessment-plan.v1",
+  "job_id": "ddcal_job_evmcontractdemo01",
+  "profile_id": "ddcal.blockchain.evm.contract.v1",
+  "expires_unix": 4102444800,
+  "target": {
+    "kind": "evm-contract",
+    "address": "0x1111111111111111111111111111111111111111"
+  },
+  "capabilities": [
+    {
+      "id": "blockchain.evm.contract.observe",
+      "params": {
+        "rpc_url": "https://RPC-ENDPOINT.example",
+        "address": "0x1111111111111111111111111111111111111111",
+        "block_tag": "latest"
+      }
+    }
+  ],
+  "export_policy": {
+    "allow_source": false,
+    "max_excerpt_bytes": 0
+  }
+}
