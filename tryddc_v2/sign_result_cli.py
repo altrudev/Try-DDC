@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 
+from .canonical import strict_json_file
 from .signing import sign_result, verify_signed_result
 
 
@@ -21,7 +22,7 @@ def main() -> int:
     parser.add_argument("--signer-role", default="try-ddc-result-signer")
     args = parser.parse_args()
 
-    result = json.loads(args.result.read_text(encoding="utf-8"))
+    result = strict_json_file(args.result)
     envelope = sign_result(
         result,
         private_key_path=args.private_key,
