@@ -70,6 +70,12 @@ def analyze_observation(
     header_after = observation.get("block_header_after")
     best_block_hash = _require_hash(observation.get("best_block_hash"), "bitcoin-best-block-hash")
     best_block_height = _require_nonnegative_int(observation.get("best_block_height"), "bitcoin-best-block-height")
+    best_block_hash_after = _require_hash(observation.get("best_block_hash_after"), "bitcoin-best-block-hash-after")
+    best_block_height_after = _require_nonnegative_int(observation.get("best_block_height_after"), "bitcoin-best-block-height-after")
+    chain_context_stable = (
+        best_block_hash == best_block_hash_after
+        and best_block_height == best_block_height_after
+    )
 
     if tx is None:
         target_hash = sha256_digest({
@@ -97,6 +103,8 @@ def analyze_observation(
                     "observed": None,
                     "best_block_hash": best_block_hash,
                     "best_block_height": best_block_height,
+                    "best_block_hash_after": best_block_hash_after,
+                    "best_block_height_after": best_block_height_after,
                 }),
                 captured_at=captured_at,
                 source_identity=str(observation.get("rpc_origin") or "bitcoin-rpc"),
@@ -106,7 +114,7 @@ def analyze_observation(
                 representation="BITCOIN_RPC_TRANSACTION_LOOKUP",
                 time_source="observer-clock",
                 time_trust="UNRESOLVED",
-                freshness_status="UNRESOLVED",
+                freshness_status="ESTABLISHED" if chain_context_stable else "UNRESOLVED",
                 freshness_policy="single-provider-observation",
                 reachability="ESTABLISHED",
                 discoverability="ESTABLISHED",
@@ -152,6 +160,9 @@ def analyze_observation(
                 "observed": False,
                 "provider_best_block_hash": best_block_hash,
                 "provider_best_block_height": best_block_height,
+                "provider_best_block_hash_after": best_block_hash_after,
+                "provider_best_block_height_after": best_block_height_after,
+                "provider_chain_context_stable": chain_context_stable,
                 "evidence_refs": ["evidence:bitcoin-transaction-query"],
             },),
             determinations=({
@@ -173,6 +184,7 @@ def analyze_observation(
                 "version": "1",
                 "provider_observation_only": True,
             "merkle_membership_verified": False,
+            "provider_chain_context_stable": chain_context_stable,
             },
             capabilities=(capability,),
             minimum_coverage_met=False,
@@ -242,6 +254,9 @@ def analyze_observation(
             "network": network,
             "best_block_hash": best_block_hash,
             "best_block_height": best_block_height,
+            "best_block_hash_after": best_block_hash_after,
+            "best_block_height_after": best_block_height_after,
+            "stable": chain_context_stable,
         }, "rpc:getblockchaininfo"),
     ]
     if included:
@@ -267,7 +282,7 @@ def analyze_observation(
             representation="BITCOIN_RPC_OBSERVATION",
             time_source="observer-clock",
             time_trust="UNRESOLVED",
-            freshness_status="ESTABLISHED" if (not included or (stable_anchor and active_chain_consistent)) else "UNRESOLVED",
+            freshness_status="ESTABLISHED" if (chain_context_stable and (not included or (stable_anchor and active_chain_consistent))) else "UNRESOLVED",
             freshness_policy="transaction-plus-block-header-recheck",
             reachability="ESTABLISHED",
             discoverability="ESTABLISHED",
@@ -315,6 +330,7 @@ def analyze_observation(
             "block_hash": block_hash,
             "block_height": block_height,
             "provider_confirmations": confirmations,
+            "provider_chain_context_stable": chain_context_stable,
             "stable_header_recheck": stable_anchor if included else None,
             "header_matches_transaction_block": anchor_consistent if included else None,
             "active_chain_matches_before": active_chain_consistent if included else None,
@@ -360,8 +376,12 @@ def analyze_observation(
         })
         determinations.append({
             "kind": "bitcoin.transaction.confirmations",
-            "status": "PARTIALLY_ESTABLISHED",
-            "detail": "Confirmation count is reported by the configured provider and is not independently consensus-verified.",
+            "status": "PARTIALLY_ESTABLISHED" if chain_context_stable else "UNRESOLVED",
+            "detail": (
+                "Confirmation count is reported by the configured provider against a stable observed provider tip and is not independently consensus-verified."
+                if chain_context_stable
+                else "Provider chain tip changed during capture; a single frozen confirmation count is not established."
+            ),
             "provider_confirmations": confirmations,
             "evidence_refs": ["evidence:bitcoin-transaction", "evidence:bitcoin-chain-context"],
         })
@@ -383,6 +403,11 @@ def analyze_observation(
             "detail": "Transaction presence or confirmation does not by itself establish business, legal, ownership, authorization, or economic consequence.",
         },
     ]
+    if not chain_context_stable:
+        unresolved.append({
+            "kind": "bitcoin.provider-tip-stability",
+            "detail": "The provider chain tip changed during capture; time-sensitive confirmation evidence remains unresolved.",
+        })
     if not included:
         unresolved.append({
             "kind": "bitcoin.mempool-state",
