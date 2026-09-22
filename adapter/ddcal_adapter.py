@@ -496,12 +496,25 @@ def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _w
     tx_response = call("getrawtransaction", [txid, True])
     if not tx_response.get("ok"):
         if tx_response.get("status") == "RPC_ERROR" and tx_response.get("rpc_error_code") == -5:
+            chain_after = call("getblockchaininfo", [])
+            if not chain_after.get("ok") or not isinstance(chain_after.get("result"), dict):
+                return {
+                    "capability": "blockchain.bitcoin.transaction.observe",
+                    "status": "CAPTURE_FAILED",
+                    "reason": "chain-context-recheck-unavailable",
+                    "transaction_signing_authority": False,
+                    "transaction_broadcast_authority": False,
+                    "private_key_authority": False,
+                    "source_exported": False,
+                }
             observation = {
                 "network": network,
                 "transaction_id": txid,
                 "transaction": None,
                 "best_block_hash": chain_result.get("bestblockhash"),
                 "best_block_height": chain_result.get("blocks"),
+                "best_block_hash_after": chain_after["result"].get("bestblockhash"),
+                "best_block_height_after": chain_after["result"].get("blocks"),
                 "rpc_origin": urlparse(rpc_url).netloc,
                 "request_count": request_id - 1,
             }
@@ -600,6 +613,18 @@ def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _w
         active_block_hash_before = active_before.get("result")
         active_block_hash_after = active_after.get("result")
 
+    chain_after = call("getblockchaininfo", [])
+    if not chain_after.get("ok") or not isinstance(chain_after.get("result"), dict):
+        return {
+            "capability": "blockchain.bitcoin.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "chain-context-recheck-unavailable",
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
     observation = {
         "network": network,
         "transaction_id": txid,
@@ -610,6 +635,8 @@ def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _w
         "active_block_hash_after": active_block_hash_after,
         "best_block_hash": chain_result.get("bestblockhash"),
         "best_block_height": chain_result.get("blocks"),
+        "best_block_hash_after": chain_after["result"].get("bestblockhash"),
+        "best_block_height_after": chain_after["result"].get("blocks"),
         "rpc_origin": urlparse(rpc_url).netloc,
         "request_count": request_id - 1,
     }
