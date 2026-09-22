@@ -240,7 +240,7 @@ def analyze_observation(
     if not isinstance(block_before, dict) or not isinstance(block_after, dict):
         raise ValidationError("solana-transaction-missing-block-anchors")
 
-    def block_identity(block: dict[str, Any], label: str) -> tuple[str, str, int | None, int | None]:
+    def block_identity(block: dict[str, Any], label: str) -> tuple[str, str, int | None, int | None, tuple[str, ...]]:
         blockhash = _base58(block.get("blockhash"), f"{label}-blockhash")
         previous = _base58(block.get("previousBlockhash"), f"{label}-previous-blockhash")
         block_height = block.get("blockHeight")
@@ -249,18 +249,22 @@ def analyze_observation(
         block_time = block.get("blockTime")
         if block_time is not None and (not isinstance(block_time, int) or isinstance(block_time, bool)):
             raise ValidationError(f"invalid-{label}-block-time")
-        return blockhash, previous, block_height, block_time
+        signatures = block.get("signatures")
+        if not isinstance(signatures, list):
+            raise ValidationError(f"invalid-{label}-signatures")
+        normalized_signatures = tuple(
+            _base58(item, f"{label}-signature", min_len=64, max_len=128)
+            for item in signatures
+        )
+        return blockhash, previous, block_height, block_time, normalized_signatures
 
     before_id = block_identity(block_before, "solana-block-before")
     after_id = block_identity(block_after, "solana-block-after")
     block_stable = before_id == after_id
+    block_signature_membership = signature in before_id[4] and signature in after_id[4]
 
     status_commitment = status["confirmationStatus"]
-    commitment_sufficient = (
-        status_commitment == "finalized"
-        or (status_commitment == "confirmed" and context_commitment in {"confirmed", "finalized"})
-        or (status_commitment == "processed" and context_commitment in {"confirmed", "finalized"})
-    )
+    commitment_sufficient = status_commitment in {"confirmed", "finalized"}
     context_covers_transaction_slot = context_slot_before >= tx_slot and context_slot_after >= tx_slot
 
     raw_items = (
@@ -294,7 +298,7 @@ def analyze_observation(
             time_trust="UNRESOLVED",
             freshness_status=(
                 "ESTABLISHED"
-                if genesis_stable and context_monotonic and block_stable and context_covers_transaction_slot
+                if genesis_stable and context_monotonic and block_stable and block_signature_membership and context_covers_transaction_slot
                 else "UNRESOLVED"
             ),
             freshness_policy="genesis-plus-context-slot-plus-block-recheck",
@@ -319,7 +323,13 @@ def analyze_observation(
         frozen_at=captured_at,
     )
 
-    capture_ok = genesis_stable and context_monotonic and block_stable and context_covers_transaction_slot
+    capture_ok = (
+        genesis_stable
+        and context_monotonic
+        and block_stable
+        and block_signature_membership
+        and context_covers_transaction_slot
+    )
     analysis_status = "COMPLETE" if capture_ok else "CAPTURE_FAILED"
     evidentiary_status = "PARTIALLY_ESTABLISHED" if capture_ok else "UNRESOLVED"
 
@@ -342,6 +352,20 @@ def analyze_observation(
             "evidence_refs": ["evidence:solana-transaction"],
         },
         {
+            "kind": "solana.transaction.inclusion",
+            "status": "PARTIALLY_ESTABLISHED" if capture_ok else "CONTRADICTED",
+            "detail": (
+                "The provider returned the target signature in a stable block-signature inventory at the transaction slot."
+                if capture_ok
+                else "The bounded block observations do not consistently contain the transaction signature at the reported slot."
+            ),
+            "evidence_refs": [
+                "evidence:solana-transaction",
+                "evidence:solana-block-before",
+                "evidence:solana-block-after",
+            ],
+        },
+        {
             "kind": "solana.transaction.commitment",
             "provider_confirmation_status": status_commitment,
             "provider_confirmations": status.get("confirmations"),
@@ -349,6 +373,8 @@ def analyze_observation(
             "context_slot_before": context_slot_before,
             "context_slot_after": context_slot_after,
             "block_stable": block_stable,
+            "block_contains_signature": block_signature_membership,
+            "block_signature_membership": block_signature_membership,
             "context_covers_transaction_slot": context_covers_transaction_slot,
             "genesis_stable": genesis_stable,
             "evidence_refs": [
@@ -378,9 +404,9 @@ def analyze_observation(
         },
         {
             "kind": "solana.transaction.execution",
-            "status": "ESTABLISHED" if execution_succeeded else "CONTRADICTED",
+            "status": "PARTIALLY_ESTABLISHED" if execution_succeeded else "CONTRADICTED",
             "detail": (
-                "The provider transaction metadata reports no execution error."
+                "The provider transaction metadata reports no execution error; this remains provider-mediated execution evidence."
                 if execution_succeeded
                 else "The provider transaction metadata reports an execution error."
             ),
@@ -435,7 +461,7 @@ def analyze_observation(
         },)
 
     limitations = (
-        "Provider confirmation status is evidence from that RPC provider, not independent Solana cluster consensus verification.",
+        "Provider block-signature membership and confirmation status are evidence from that RPC provider, not independent Solana cluster consensus verification.",
         "A provider-reported finalized state is not promoted to an absolute finality guarantee.",
         "Successful transaction metadata does not establish authority, intended semantics, ownership, or downstream economic consequence.",
         "No private key, signing, sendTransaction, simulateTransaction, or transaction-construction authority exists.",
