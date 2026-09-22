@@ -223,14 +223,14 @@ def analyze_observation(
             "kind": "capture.anchor",
             "status": "CONTRADICTED",
             "detail": "Block anchor changed during capture; the observation is not treated as a stable frozen chain state.",
-            "evidence_refs": ["evidence:block-anchor-before"],
+            "evidence_refs": ["evidence:block-anchor-before", "evidence:block-anchor-after"],
         })
     else:
         determinations.append({
             "kind": "capture.anchor",
             "status": "ESTABLISHED",
             "detail": "The same block number and hash were observed before and after bounded capture.",
-            "evidence_refs": ["evidence:block-anchor-before"],
+            "evidence_refs": ["evidence:block-anchor-before", "evidence:block-anchor-after"],
         })
 
     if proxy_conflict:
