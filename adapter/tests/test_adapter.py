@@ -71,6 +71,64 @@ class AdapterTests(unittest.TestCase):
         for method in ("eth_sendTransaction", "eth_sendRawTransaction", "personal_unlockAccount"):
             self.assertNotIn(method, adapter.READONLY_RPC_METHODS)
 
+    def test_evm_contract_capability_is_registered_and_read_only(self):
+        self.assertIn("blockchain.evm.contract.observe", adapter.CAPABILITIES)
+        for method in ("eth_sendTransaction", "eth_sendRawTransaction", "personal_unlockAccount"):
+            self.assertNotIn(method, adapter.READONLY_RPC_METHODS)
+
+    def test_evm_contract_capture_pins_reads_and_rechecks_anchor(self):
+        calls = []
+        block = {
+            "number": "0x10",
+            "hash": "0x" + "a" * 64,
+            "parentHash": "0x" + "b" * 64,
+            "timestamp": "0x1234",
+        }
+        storage_zero = "0x" + "0" * 64
+
+        def fake_rpc(_url, method, params, request_id):
+            calls.append((method, params, request_id))
+            if method == "eth_chainId":
+                return {"ok": True, "result": "0x1"}
+            if method == "eth_getBlockByNumber":
+                return {"ok": True, "result": dict(block)}
+            if method == "eth_getCode":
+                return {"ok": True, "result": "0x6001600055"}
+            if method == "eth_getStorageAt":
+                return {"ok": True, "result": storage_zero}
+            raise AssertionError(method)
+
+        original = adapter._rpc_request
+        adapter._rpc_request = fake_rpc
+        try:
+            result = adapter.run_evm_contract_observe(
+                Path("."),
+                {
+                    "rpc_url": "https://rpc.example",
+                    "address": "0x1111111111111111111111111111111111111111",
+                    "block_tag": "latest",
+                },
+                Path("."),
+            )
+        finally:
+            adapter._rpc_request = original
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertFalse(result["transaction_signing_authority"])
+        self.assertFalse(result["private_key_authority"])
+        self.assertFalse(result["arbitrary_rpc_authority"])
+
+        pinned_reads = [
+            params
+            for method, params, _request_id in calls
+            if method in {"eth_getCode", "eth_getStorageAt"}
+        ]
+        self.assertTrue(pinned_reads)
+        self.assertTrue(all(params[-1] == "0x10" for params in pinned_reads))
+        block_calls = [params for method, params, _request_id in calls if method == "eth_getBlockByNumber"]
+        self.assertEqual(block_calls[0], ["latest", False])
+        self.assertEqual(block_calls[-1], ["0x10", False])
+
 
 if __name__ == "__main__":
     unittest.main()
