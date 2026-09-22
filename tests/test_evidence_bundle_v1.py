@@ -102,7 +102,7 @@ class EvidenceBundleV1Tests(unittest.TestCase):
         unsigned = dict(value)
         unsigned.pop("capsule_digest")
         value["capsule_digest"] = sha256_digest(unsigned)
-        with self.assertRaisesRegex(ValidationError, "capsule-prohibited-field"):
+        with self.assertRaisesRegex(ValidationError, "capsule-evidence-unknown-field"):
             analyze_capsule(value, analysis_time="2026-09-22T17:00:01Z", implementation_revision="test")
 
 
