@@ -397,18 +397,39 @@ def _bitcoin_rpc_request(rpc_url: str, method: str, params: list[Any], request_i
         "Accept": "application/json",
         "User-Agent": f"DDCAL-Adapter/{VERSION}",
     })
+
+    from urllib.request import build_opener, HTTPRedirectHandler
+
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
     try:
-        with urlopen(req, timeout=20) as response:
+        with build_opener(NoRedirect()).open(req, timeout=20) as response:
             raw = response.read(MAX_RPC_BYTES + 1)
     except HTTPError as exc:
-        return {"ok": False, "status": "HTTP_ERROR", "http_status": exc.code}
+        return {
+            "ok": False,
+            "status": "HTTP_ERROR",
+            "http_status": exc.code,
+            "redirect_location": exc.headers.get("Location"),
+        }
     except URLError:
         return {"ok": False, "status": "TRANSPORT_UNAVAILABLE"}
     if len(raw) > MAX_RPC_BYTES:
         return {"ok": False, "status": "RESPONSE_TOO_LARGE"}
+
+    def reject_duplicates(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError("duplicate-json-key")
+            out[key] = value
+        return out
+
     try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError:
+        decoded = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except (json.JSONDecodeError, ValueError):
         return {"ok": False, "status": "INVALID_JSON", "response_sha256": sha256_bytes(raw)}
     if not isinstance(decoded, dict):
         return {"ok": False, "status": "INVALID_RPC_RESPONSE"}
@@ -428,7 +449,6 @@ def _bitcoin_rpc_request(rpc_url: str, method: str, params: list[Any], request_i
         "result": decoded.get("result"),
         "response_sha256": sha256_bytes(raw),
     }
-
 
 def _bitcoin_txid(value: Any) -> str:
     text = str(value or "")
