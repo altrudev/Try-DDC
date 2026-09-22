@@ -285,6 +285,7 @@ def analyze_observation(
             "version": "1",
             "proxy_detection": ["ERC1967_IMPLEMENTATION", "ERC1967_BEACON", "EIP1167_MINIMAL"],
         },
+        capabilities=(capability,),
         minimum_coverage_met=False,
     )
     return manifest, result
