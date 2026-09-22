@@ -6,42 +6,48 @@
       "version": "2",
       "state": "IMPLEMENTING",
       "public": true,
-      "execution_authority": false
+      "execution_authority": false,
+      "profile_digest": "sha256:cde61a887c7211f4172aa1a4525e4800ee3273e7e1d7d78478d6a661ca4f4d65"
     },
     {
       "id": "blockchain.evm.contract.v1",
       "version": "1",
       "state": "IMPLEMENTING",
       "public": false,
-      "execution_authority": false
+      "execution_authority": false,
+      "profile_digest": "sha256:c5fd222e99f0907a3981a502a513ef2adb380887aa0d0493915149803f011624"
     },
     {
       "id": "blockchain.evm.transaction.v1",
       "version": "1",
       "state": "IMPLEMENTING",
       "public": false,
-      "execution_authority": false
+      "execution_authority": false,
+      "profile_digest": "sha256:d6cb3162731c2b59b10b25351f101059aa5b21a6102f1012e34a10186594b391"
     },
     {
       "id": "evidence.bundle.v1",
       "version": "1",
       "state": "IMPLEMENTING",
       "public": false,
-      "execution_authority": false
+      "execution_authority": false,
+      "profile_digest": "sha256:765eb956c6e3f062ec8c86ed5bcaa7dbbfb0e3a48492eb2444f69ffa610b8b30"
     },
     {
       "id": "agent.trace.v1",
       "version": "1",
       "state": "IMPLEMENTING",
       "public": false,
-      "execution_authority": false
+      "execution_authority": false,
+      "profile_digest": "sha256:028a1f7bbae24669cecdbbf84dc108933e1e3e452d7ec8d3dbb0171f95b92122"
     },
     {
       "id": "protocol.mcp.observe.v1",
       "version": "1",
       "state": "IMPLEMENTING",
       "public": false,
-      "execution_authority": false
+      "execution_authority": false,
+      "profile_digest": "sha256:656ae4b82a10f21a83cff6adf03829a43d2aed948e368ef13e9abbddd2643c6b"
     }
   ]
 }
