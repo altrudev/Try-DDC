@@ -10,6 +10,7 @@ Current v0.1 capabilities:
 - filesystem.manifest        -> hashes bounded local files without exporting contents
 - api.http.readonly          -> anonymous GET/HEAD/OPTIONS against an explicit HTTPS URL
 - blockchain.rpc.readonly    -> allowlisted read-only Ethereum JSON-RPC methods
+- blockchain.evm.contract.observe -> block-pinned EVM contract/proxy observation
 
 The output is a DDCAL Evidence Capsule. Optional HMAC signing uses a local key
 file that is never supplied by the remote plan.
@@ -51,11 +52,16 @@ READONLY_RPC_METHODS = {
     "eth_getLogs",
 }
 
+EIP1967_IMPLEMENTATION_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
+EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103"
+EIP1967_BEACON_SLOT = "0xa3f0ad74e5423aebfd80d3ef4346578335a9a72aeaee59ff6cb3582b35133d50"
+
 CAPABILITIES = {
     "repo.static": "Local Try DDC bounded static repository review",
     "filesystem.manifest": "Local path/file manifest and SHA-256 commitments",
     "api.http.readonly": "Anonymous HTTPS GET/HEAD/OPTIONS observation",
     "blockchain.rpc.readonly": "Allowlisted read-only Ethereum-compatible JSON-RPC observation",
+    "blockchain.evm.contract.observe": "Block-pinned read-only EVM contract and common proxy observation",
 }
 
 
@@ -317,11 +323,180 @@ def run_blockchain_rpc(_repo_root: Path, params: dict[str, Any], _work: Path) ->
     }
 
 
+def _rpc_request(rpc_url: str, method: str, params: list[Any], request_id: int) -> dict[str, Any]:
+    if method not in READONLY_RPC_METHODS:
+        fail(f"RPC method is not allowlisted as read-only: {method}")
+    payload = canonical_bytes({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+    req = Request(rpc_url, method="POST", data=payload, headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": f"DDCAL-Adapter/{VERSION}",
+    })
+    try:
+        with urlopen(req, timeout=20) as response:
+            raw = response.read(MAX_RPC_BYTES + 1)
+    except HTTPError as exc:
+        return {"ok": False, "status": "HTTP_ERROR", "http_status": exc.code}
+    except URLError:
+        return {"ok": False, "status": "TRANSPORT_UNAVAILABLE"}
+    if len(raw) > MAX_RPC_BYTES:
+        return {"ok": False, "status": "RESPONSE_TOO_LARGE"}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "status": "INVALID_JSON", "response_sha256": sha256_bytes(raw)}
+    if not isinstance(decoded, dict) or decoded.get("error") is not None or "result" not in decoded:
+        return {
+            "ok": False,
+            "status": "RPC_ERROR",
+            "response_sha256": sha256_bytes(raw),
+        }
+    return {
+        "ok": True,
+        "result": decoded.get("result"),
+        "response_sha256": sha256_bytes(raw),
+    }
+
+
+def _evm_address(value: Any) -> str:
+    text = str(value or "")
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", text):
+        fail("blockchain.evm.contract.observe requires a 20-byte EVM address")
+    return text.lower()
+
+
+def _storage_address(value: Any) -> str | None:
+    text = str(value or "")
+    if not re.fullmatch(r"0x[0-9a-fA-F]{0,64}", text) or len(text[2:]) % 2:
+        return None
+    body = text[2:].rjust(64, "0")
+    if len(body) != 64:
+        return None
+    address = body[-40:]
+    return None if int(address, 16) == 0 else "0x" + address.lower()
+
+
+def run_evm_contract_observe(_repo_root: Path, params: dict[str, Any], _work: Path) -> dict[str, Any]:
+    """Capture a bounded, read-only EVM contract observation.
+
+    The first block lookup establishes an anchor. All contract/storage reads use
+    that exact block number. The block is fetched again at the end and the
+    profile later refuses stable-state conclusions if the hash changed.
+    """
+    rpc_url = validate_https_url(str(params.get("rpc_url") or ""))
+    address = _evm_address(params.get("address"))
+    block_tag = str(params.get("block_tag") or "latest").lower()
+    if block_tag not in {"latest", "safe", "finalized"} and not re.fullmatch(r"0x[0-9a-f]+", block_tag):
+        fail("unsupported EVM block tag; use latest, safe, finalized, or a hex block number")
+
+    request_id = 1
+    def call(method: str, rpc_params: list[Any]) -> dict[str, Any]:
+        nonlocal request_id
+        result = _rpc_request(rpc_url, method, rpc_params, request_id)
+        request_id += 1
+        return result
+
+    chain = call("eth_chainId", [])
+    first = call("eth_getBlockByNumber", [block_tag, False])
+    if not chain.get("ok") or not first.get("ok") or not isinstance(first.get("result"), dict):
+        return {
+            "capability": "blockchain.evm.contract.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "chain-or-anchor-unavailable",
+            "transaction_signing_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    anchor_before = first["result"]
+    pinned = anchor_before.get("number")
+    if not isinstance(pinned, str) or not re.fullmatch(r"0x[0-9a-fA-F]+", pinned):
+        return {
+            "capability": "blockchain.evm.contract.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "anchor-missing-block-number",
+            "transaction_signing_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    code = call("eth_getCode", [address, pinned])
+    impl = call("eth_getStorageAt", [address, EIP1967_IMPLEMENTATION_SLOT, pinned])
+    admin = call("eth_getStorageAt", [address, EIP1967_ADMIN_SLOT, pinned])
+    beacon = call("eth_getStorageAt", [address, EIP1967_BEACON_SLOT, pinned])
+    core = (code, impl, admin, beacon)
+    if not all(item.get("ok") for item in core):
+        return {
+            "capability": "blockchain.evm.contract.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "required-contract-observation-unavailable",
+            "transaction_signing_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    beacon_address = _storage_address(beacon.get("result"))
+    beacon_implementation = None
+    if beacon_address:
+        # implementation() selector. Read-only eth_call at the pinned block.
+        observed = call("eth_call", [{"to": beacon_address, "data": "0x5c60da1b"}, pinned])
+        if observed.get("ok"):
+            beacon_implementation = _storage_address(observed.get("result"))
+
+    second = call("eth_getBlockByNumber", [pinned, False])
+    if not second.get("ok") or not isinstance(second.get("result"), dict):
+        return {
+            "capability": "blockchain.evm.contract.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "anchor-recheck-unavailable",
+            "transaction_signing_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    finality_state = (
+        "PROVIDER_FINALIZED_TAG" if block_tag == "finalized"
+        else "PROVIDER_SAFE_TAG" if block_tag == "safe"
+        else "UNRESOLVED"
+    )
+    observation = {
+        "chain_id": str(chain.get("result") or "").lower(),
+        "contract_address": address,
+        "anchor_before": {
+            key: anchor_before.get(key)
+            for key in ("number", "hash", "parentHash", "timestamp")
+        },
+        "anchor_after": {
+            key: second["result"].get(key)
+            for key in ("number", "hash", "parentHash", "timestamp")
+        },
+        "runtime_code": code.get("result"),
+        "implementation_slot": impl.get("result"),
+        "admin_slot": admin.get("result"),
+        "beacon_slot": beacon.get("result"),
+        "beacon_implementation": beacon_implementation,
+        "rpc_origin": urlparse(rpc_url).netloc,
+        "requested_block_tag": block_tag,
+        "finality_state": finality_state,
+        "request_count": request_id - 1,
+    }
+    return {
+        "capability": "blockchain.evm.contract.observe",
+        "status": "COMPLETE",
+        "observation": observation,
+        "transaction_signing_authority": False,
+        "private_key_authority": False,
+        "arbitrary_rpc_authority": False,
+        "source_exported": False,
+    }
+
+
 RUNNERS = {
     "repo.static": run_repo_static,
     "filesystem.manifest": run_filesystem_manifest,
     "api.http.readonly": run_http_readonly,
     "blockchain.rpc.readonly": run_blockchain_rpc,
+    "blockchain.evm.contract.observe": run_evm_contract_observe,
 }
 
 
