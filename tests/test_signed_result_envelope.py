@@ -140,6 +140,18 @@ class SignedResultEnvelopeTests(unittest.TestCase):
         )
         self.assertFalse(verify_signed_result(envelope, public_key_path=other_public, result=result))
 
+    def test_private_key_permissions_must_be_owner_only(self):
+        result = self.result()
+        self.private.chmod(0o644)
+        with self.assertRaisesRegex(Exception, "private-key-permissions-too-broad"):
+            sign_result(
+                result,
+                private_key_path=self.private,
+                public_key_path=self.public,
+                issued_at="2026-09-22T17:01:00Z",
+            )
+        self.private.chmod(0o600)
+
     def test_semantics_do_not_claim_certification(self):
         result = self.result()
         envelope = sign_result(
