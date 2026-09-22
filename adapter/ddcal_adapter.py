@@ -12,6 +12,7 @@ Current v0.1 capabilities:
 - blockchain.rpc.readonly    -> allowlisted read-only Ethereum JSON-RPC methods
 - blockchain.evm.contract.observe -> block-pinned EVM contract/proxy observation
 - blockchain.evm.transaction.observe -> read-only EVM transaction/receipt/inclusion observation
+- agent.replay.report          -> local Agent Replay report binding into agent.trace.v1
 
 The output is a DDCAL Evidence Capsule. Optional HMAC signing uses a local key
 file that is never supplied by the remote plan.
@@ -66,6 +67,7 @@ CAPABILITIES = {
     "blockchain.rpc.readonly": "Allowlisted read-only Ethereum-compatible JSON-RPC observation",
     "blockchain.evm.contract.observe": "Block-pinned read-only EVM contract and common proxy observation",
     "blockchain.evm.transaction.observe": "Read-only EVM transaction, receipt, and inclusion observation",
+    "agent.replay.report": "Local Agent Replay reconstruction binding into Try DDC agent.trace.v1",
 }
 
 
@@ -590,6 +592,74 @@ def run_evm_transaction_observe(_repo_root: Path, params: dict[str, Any], _work:
     }
 
 
+def run_agent_replay_report(repo_root: Path, params: dict[str, Any], work: Path) -> dict[str, Any]:
+    report_rel = str(params.get("path") or "")
+    if not report_rel or Path(report_rel).is_absolute():
+        fail("agent.replay.report requires a relative report path")
+    report_path = ensure_within(repo_root, repo_root / report_rel)
+    if not report_path.is_file():
+        fail("agent.replay.report file is unavailable")
+    if report_path.stat().st_size > MAX_RPC_BYTES:
+        fail("agent.replay.report exceeds bounded input size")
+
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except Exception:
+        fail("agent.replay.report is not valid JSON")
+    if not isinstance(report, dict) or report.get("schema") not in {
+        "agent-replay.incident.v2",
+        "agent-replay.aps-authority-reconstruction.v2",
+    }:
+        fail("agent.replay.report schema is unsupported")
+
+    out = work / "agent-trace-v1"
+    out.mkdir(parents=True, exist_ok=True)
+    root = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tryddc_v2.agent_trace_cli",
+            "--replay-report",
+            str(report_path),
+            "--out-dir",
+            str(out),
+        ],
+        cwd=str(root),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+        check=False,
+        env={"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(root)},
+    )
+    result_path = out / "try-ddc-result-v2.json"
+    manifest_path = out / "evidence-manifest.json"
+    if proc.returncode != 0 or not result_path.is_file() or not manifest_path.is_file():
+        return {
+            "capability": "agent.replay.report",
+            "status": "CAPTURE_FAILED",
+            "stderr_sha256": sha256_bytes(proc.stderr.encode("utf-8", errors="replace")),
+            "source_exported": False,
+            "raw_report_exported": False,
+        }
+
+    result = read_json(result_path)
+    manifest = read_json(manifest_path)
+    return {
+        "capability": "agent.replay.report",
+        "status": str(result.get("analysis_status") or "INCOMPLETE"),
+        "source_schema": report.get("schema"),
+        "result_digest": result.get("result_digest"),
+        "evidence_root": manifest.get("evidence_root"),
+        "result_sha256": sha256_file(result_path),
+        "manifest_sha256": sha256_file(manifest_path),
+        "source_exported": False,
+        "raw_report_exported": False,
+        "arbitrary_tool_authority": False,
+    }
+
+
 RUNNERS = {
     "repo.static": run_repo_static,
     "filesystem.manifest": run_filesystem_manifest,
@@ -597,6 +667,7 @@ RUNNERS = {
     "blockchain.rpc.readonly": run_blockchain_rpc,
     "blockchain.evm.contract.observe": run_evm_contract_observe,
     "blockchain.evm.transaction.observe": run_evm_transaction_observe,
+    "agent.replay.report": run_agent_replay_report,
 }
 
 
