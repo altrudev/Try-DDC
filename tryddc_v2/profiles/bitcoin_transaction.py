@@ -166,6 +166,7 @@ def analyze_observation(
                 "method": "blockchain.bitcoin.transaction.v1",
                 "version": "1",
                 "provider_observation_only": True,
+            "merkle_membership_verified": False,
             },
             capabilities=(capability,),
             minimum_coverage_met=False,
@@ -328,9 +329,9 @@ def analyze_observation(
     if included:
         determinations.append({
             "kind": "bitcoin.transaction.inclusion",
-            "status": "ESTABLISHED" if stable_anchor and anchor_consistent else "CONTRADICTED",
+            "status": "PARTIALLY_ESTABLISHED" if stable_anchor and anchor_consistent else "CONTRADICTED",
             "detail": (
-                "The transaction references a block whose header identity was stable across the bounded recheck."
+                "The provider binds the transaction to a block whose header identity was stable across the bounded recheck. No independent Merkle membership proof is performed."
                 if stable_anchor and anchor_consistent
                 else "Block inclusion evidence was unstable or inconsistent during the bounded capture."
             ),
@@ -372,7 +373,7 @@ def analyze_observation(
         })
 
     limitations = (
-        "Provider-reported confirmations are evidence from that provider, not independent consensus verification.",
+        "Provider-reported block inclusion and confirmations are evidence from that provider, not independent consensus or Merkle-membership verification.",
         "Transaction inclusion does not establish authorization, ownership, business meaning, or downstream economic consequence.",
         "No wallet, private key, signing, broadcast, fee-bump, or transaction-construction authority exists.",
         "Unconfirmed observation does not establish network-wide mempool acceptance.",
