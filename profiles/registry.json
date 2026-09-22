@@ -56,6 +56,14 @@
       "public": false,
       "execution_authority": false,
       "profile_digest": "sha256:61e5c0d859e0e4089b3548beb9a42c8334e697613d14dce6f4ebd30c81004ae4"
+    },
+    {
+      "id": "blockchain.solana.transaction.v1",
+      "version": "1",
+      "state": "IMPLEMENTING",
+      "public": false,
+      "execution_authority": false,
+      "profile_digest": "sha256:d45af7b5cd7e15a584c2c83d4073e8457acfd5174a2d46f9f39ded3d72f00266"
     }
   ]
 }
