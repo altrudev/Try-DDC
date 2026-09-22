@@ -69,6 +69,33 @@ class EvidenceBundleV1Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "capsule-duplicate-evidence-id"):
             analyze_capsule(value, analysis_time="2026-09-22T17:00:01Z", implementation_revision="test")
 
+    def test_unknown_nested_producer_field_rejected(self):
+        value = capsule()
+        value["producer"]["secret_note"] = "must-not-pass-through"
+        unsigned = dict(value)
+        unsigned.pop("capsule_digest")
+        value["capsule_digest"] = sha256_digest(unsigned)
+        with self.assertRaisesRegex(ValidationError, "capsule-producer-unknown-field"):
+            analyze_capsule(value, analysis_time="2026-09-22T17:00:01Z", implementation_revision="test")
+
+    def test_unregistered_producer_capability_rejected(self):
+        value = capsule()
+        value["evidence"][0]["capability_id"] = "unknown.future.capability"
+        unsigned = dict(value)
+        unsigned.pop("capsule_digest")
+        value["capsule_digest"] = sha256_digest(unsigned)
+        with self.assertRaisesRegex(ValidationError, "capsule-unregistered-producer-capability"):
+            analyze_capsule(value, analysis_time="2026-09-22T17:00:01Z", implementation_revision="test")
+
+    def test_export_authority_must_be_false(self):
+        value = capsule()
+        value["export"]["private_key_authority"] = True
+        unsigned = dict(value)
+        unsigned.pop("capsule_digest")
+        value["capsule_digest"] = sha256_digest(unsigned)
+        with self.assertRaisesRegex(ValidationError, "capsule-export-private_key_authority-must-be-false"):
+            analyze_capsule(value, analysis_time="2026-09-22T17:00:01Z", implementation_revision="test")
+
     def test_prohibited_raw_source_field_rejected(self):
         value = capsule()
         value["evidence"][0]["raw_source"] = "do-not-export"
