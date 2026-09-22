@@ -49,6 +49,7 @@ BITCOIN_READONLY_RPC_METHODS = {
     "getblockchaininfo",
     "getrawtransaction",
     "getblockheader",
+    "getblockhash",
 }
 
 READONLY_RPC_METHODS = {
@@ -348,8 +349,14 @@ def _rpc_request(rpc_url: str, method: str, params: list[Any], request_id: int) 
         "Accept": "application/json",
         "User-Agent": f"DDCAL-Adapter/{VERSION}",
     })
+    from urllib.request import build_opener, HTTPRedirectHandler
+
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
     try:
-        with urlopen(req, timeout=20) as response:
+        with build_opener(NoRedirect()).open(req, timeout=20) as response:
             raw = response.read(MAX_RPC_BYTES + 1)
     except HTTPError as exc:
         return {"ok": False, "status": "HTTP_ERROR", "http_status": exc.code}
@@ -357,9 +364,16 @@ def _rpc_request(rpc_url: str, method: str, params: list[Any], request_id: int) 
         return {"ok": False, "status": "TRANSPORT_UNAVAILABLE"}
     if len(raw) > MAX_RPC_BYTES:
         return {"ok": False, "status": "RESPONSE_TOO_LARGE"}
+    def reject_duplicates(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError("duplicate-json-key")
+            out[key] = value
+        return out
     try:
-        decoded = json.loads(raw)
-    except json.JSONDecodeError:
+        decoded = json.loads(raw, object_pairs_hook=reject_duplicates)
+    except (json.JSONDecodeError, ValueError):
         return {"ok": False, "status": "INVALID_JSON", "response_sha256": sha256_bytes(raw)}
     if not isinstance(decoded, dict) or decoded.get("error") is not None or "result" not in decoded:
         return {
@@ -506,6 +520,8 @@ def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _w
 
     header_before = None
     header_after = None
+    active_block_hash_before = None
+    active_block_hash_after = None
     block_hash = tx.get("blockhash")
     if block_hash is not None:
         if not isinstance(block_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", block_hash):
@@ -519,12 +535,11 @@ def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _w
                 "source_exported": False,
             }
         first = call("getblockheader", [block_hash, True])
-        second = call("getblockheader", [block_hash, True])
-        if not first.get("ok") or not second.get("ok") or not isinstance(first.get("result"), dict) or not isinstance(second.get("result"), dict):
+        if not first.get("ok") or not isinstance(first.get("result"), dict):
             return {
                 "capability": "blockchain.bitcoin.transaction.observe",
                 "status": "CAPTURE_FAILED",
-                "reason": "block-header-recheck-unavailable",
+                "reason": "block-header-unavailable",
                 "transaction_signing_authority": False,
                 "transaction_broadcast_authority": False,
                 "private_key_authority": False,
@@ -532,7 +547,38 @@ def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _w
             }
         keep = ("hash", "height", "previousblockhash", "merkleroot", "time", "confirmations")
         header_before = {key: first["result"].get(key) for key in keep}
+        height = header_before.get("height")
+        if not isinstance(height, int) or isinstance(height, bool) or height < 0:
+            return {
+                "capability": "blockchain.bitcoin.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "block-header-height-invalid",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+        active_before = call("getblockhash", [height])
+        second = call("getblockheader", [block_hash, True])
+        active_after = call("getblockhash", [height])
+        if (
+            not active_before.get("ok")
+            or not second.get("ok")
+            or not active_after.get("ok")
+            or not isinstance(second.get("result"), dict)
+        ):
+            return {
+                "capability": "blockchain.bitcoin.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "active-chain-recheck-unavailable",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
         header_after = {key: second["result"].get(key) for key in keep}
+        active_block_hash_before = active_before.get("result")
+        active_block_hash_after = active_after.get("result")
 
     observation = {
         "network": network,
@@ -540,6 +586,8 @@ def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _w
         "transaction": tx,
         "block_header_before": header_before,
         "block_header_after": header_after,
+        "active_block_hash_before": active_block_hash_before,
+        "active_block_hash_after": active_block_hash_after,
         "best_block_hash": chain_result.get("bestblockhash"),
         "best_block_height": chain_result.get("blocks"),
         "rpc_origin": urlparse(rpc_url).netloc,
