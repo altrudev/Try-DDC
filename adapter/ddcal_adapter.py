@@ -45,6 +45,12 @@ MAX_MANIFEST_FILES = 20000
 MAX_HTTP_BYTES = 512 * 1024
 MAX_RPC_BYTES = 1024 * 1024
 
+BITCOIN_READONLY_RPC_METHODS = {
+    "getblockchaininfo",
+    "getrawtransaction",
+    "getblockheader",
+}
+
 READONLY_RPC_METHODS = {
     "eth_chainId",
     "eth_blockNumber",
@@ -69,6 +75,7 @@ CAPABILITIES = {
     "blockchain.rpc.readonly": "Allowlisted read-only Ethereum-compatible JSON-RPC observation",
     "blockchain.evm.contract.observe": "Block-pinned read-only EVM contract and common proxy observation",
     "blockchain.evm.transaction.observe": "Read-only EVM transaction, receipt, and inclusion observation",
+    "blockchain.bitcoin.transaction.observe": "Read-only Bitcoin transaction, inclusion, and confirmation observation",
     "agent.replay.report": "Local Agent Replay reconstruction binding into Try DDC agent.trace.v1",
     "protocol.mcp.observe": "Anonymous read-only MCP discovery and advertised-surface observation",
 }
@@ -364,6 +371,190 @@ def _rpc_request(rpc_url: str, method: str, params: list[Any], request_id: int) 
         "ok": True,
         "result": decoded.get("result"),
         "response_sha256": sha256_bytes(raw),
+    }
+
+
+def _bitcoin_rpc_request(rpc_url: str, method: str, params: list[Any], request_id: int) -> dict[str, Any]:
+    if method not in BITCOIN_READONLY_RPC_METHODS:
+        fail(f"Bitcoin RPC method is not allowlisted as read-only: {method}")
+    payload = canonical_bytes({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+    req = Request(rpc_url, method="POST", data=payload, headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": f"DDCAL-Adapter/{VERSION}",
+    })
+    try:
+        with urlopen(req, timeout=20) as response:
+            raw = response.read(MAX_RPC_BYTES + 1)
+    except HTTPError as exc:
+        return {"ok": False, "status": "HTTP_ERROR", "http_status": exc.code}
+    except URLError:
+        return {"ok": False, "status": "TRANSPORT_UNAVAILABLE"}
+    if len(raw) > MAX_RPC_BYTES:
+        return {"ok": False, "status": "RESPONSE_TOO_LARGE"}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "status": "INVALID_JSON", "response_sha256": sha256_bytes(raw)}
+    if not isinstance(decoded, dict):
+        return {"ok": False, "status": "INVALID_RPC_RESPONSE"}
+    error = decoded.get("error")
+    if error is not None:
+        code = error.get("code") if isinstance(error, dict) else None
+        return {
+            "ok": False,
+            "status": "RPC_ERROR",
+            "rpc_error_code": code,
+            "response_sha256": sha256_bytes(raw),
+        }
+    if "result" not in decoded:
+        return {"ok": False, "status": "RPC_RESULT_MISSING"}
+    return {
+        "ok": True,
+        "result": decoded.get("result"),
+        "response_sha256": sha256_bytes(raw),
+    }
+
+
+def _bitcoin_txid(value: Any) -> str:
+    text = str(value or "")
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", text):
+        fail("blockchain.bitcoin.transaction.observe requires a 32-byte transaction id")
+    return text.lower()
+
+
+def run_bitcoin_transaction_observe(_repo_root: Path, params: dict[str, Any], _work: Path) -> dict[str, Any]:
+    rpc_url = validate_https_url(str(params.get("rpc_url") or ""))
+    txid = _bitcoin_txid(params.get("transaction_id"))
+    request_id = 1
+
+    def call(method: str, rpc_params: list[Any]) -> dict[str, Any]:
+        nonlocal request_id
+        result = _bitcoin_rpc_request(rpc_url, method, rpc_params, request_id)
+        request_id += 1
+        return result
+
+    chain = call("getblockchaininfo", [])
+    if not chain.get("ok") or not isinstance(chain.get("result"), dict):
+        return {
+            "capability": "blockchain.bitcoin.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "chain-context-unavailable",
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    chain_result = chain["result"]
+    network = chain_result.get("chain")
+    if network not in {"main", "test", "regtest", "signet"}:
+        return {
+            "capability": "blockchain.bitcoin.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "unsupported-or-invalid-network",
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    tx_response = call("getrawtransaction", [txid, True])
+    if not tx_response.get("ok"):
+        if tx_response.get("status") == "RPC_ERROR" and tx_response.get("rpc_error_code") == -5:
+            observation = {
+                "network": network,
+                "transaction_id": txid,
+                "transaction": None,
+                "best_block_hash": chain_result.get("bestblockhash"),
+                "best_block_height": chain_result.get("blocks"),
+                "rpc_origin": urlparse(rpc_url).netloc,
+                "request_count": request_id - 1,
+            }
+            return {
+                "capability": "blockchain.bitcoin.transaction.observe",
+                "status": "COMPLETE",
+                "observation": observation,
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "private_key_authority": False,
+                "wallet_authority": False,
+                "arbitrary_rpc_authority": False,
+                "source_exported": False,
+            }
+        return {
+            "capability": "blockchain.bitcoin.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": str(tx_response.get("status") or "transaction-query-failed"),
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    tx = tx_response.get("result")
+    if not isinstance(tx, dict):
+        return {
+            "capability": "blockchain.bitcoin.transaction.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": "transaction-response-invalid",
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "private_key_authority": False,
+            "source_exported": False,
+        }
+
+    header_before = None
+    header_after = None
+    block_hash = tx.get("blockhash")
+    if block_hash is not None:
+        if not isinstance(block_hash, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", block_hash):
+            return {
+                "capability": "blockchain.bitcoin.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "transaction-block-hash-invalid",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+        first = call("getblockheader", [block_hash, True])
+        second = call("getblockheader", [block_hash, True])
+        if not first.get("ok") or not second.get("ok") or not isinstance(first.get("result"), dict) or not isinstance(second.get("result"), dict):
+            return {
+                "capability": "blockchain.bitcoin.transaction.observe",
+                "status": "CAPTURE_FAILED",
+                "reason": "block-header-recheck-unavailable",
+                "transaction_signing_authority": False,
+                "transaction_broadcast_authority": False,
+                "private_key_authority": False,
+                "source_exported": False,
+            }
+        keep = ("hash", "height", "previousblockhash", "merkleroot", "time", "confirmations")
+        header_before = {key: first["result"].get(key) for key in keep}
+        header_after = {key: second["result"].get(key) for key in keep}
+
+    observation = {
+        "network": network,
+        "transaction_id": txid,
+        "transaction": tx,
+        "block_header_before": header_before,
+        "block_header_after": header_after,
+        "best_block_hash": chain_result.get("bestblockhash"),
+        "best_block_height": chain_result.get("blocks"),
+        "rpc_origin": urlparse(rpc_url).netloc,
+        "request_count": request_id - 1,
+    }
+    return {
+        "capability": "blockchain.bitcoin.transaction.observe",
+        "status": "COMPLETE",
+        "observation": observation,
+        "transaction_signing_authority": False,
+        "transaction_broadcast_authority": False,
+        "private_key_authority": False,
+        "wallet_authority": False,
+        "arbitrary_rpc_authority": False,
+        "source_exported": False,
     }
 
 
@@ -915,6 +1106,7 @@ RUNNERS = {
     "blockchain.rpc.readonly": run_blockchain_rpc,
     "blockchain.evm.contract.observe": run_evm_contract_observe,
     "blockchain.evm.transaction.observe": run_evm_transaction_observe,
+    "blockchain.bitcoin.transaction.observe": run_bitcoin_transaction_observe,
     "agent.replay.report": run_agent_replay_report,
     "protocol.mcp.observe": run_mcp_observe,
 }
@@ -959,7 +1151,7 @@ def _v2_target_id(plan: dict[str, Any]) -> str:
 def _v2_classification(capability_id: str) -> str:
     # Network chain observations are public protocol data. Local repository and
     # filesystem commitments remain customer-private by default.
-    if capability_id.startswith("blockchain.evm."):
+    if capability_id.startswith("blockchain.evm.") or capability_id.startswith("blockchain.bitcoin."):
         return "PUBLIC"
     return "CUSTOMER_PRIVATE"
 
