@@ -103,6 +103,11 @@ class EvidenceItem:
     classification: str = "PUBLIC"
     derived_from: tuple[str, ...] = ()
     derivation_method: str | None = None
+    derivation_method_version: str | None = None
+    authorization_status: str = "UNRESOLVED"
+    representation: str = "RAW_BYTES_DIGEST"
+    time_source: str | None = None
+    time_trust: str = "UNRESOLVED"
     freshness_status: str = "UNRESOLVED"
     freshness_policy: str | None = None
     reachability: str = "UNRESOLVED"
@@ -128,7 +133,7 @@ class EvidenceItem:
         for parent in self.derived_from:
             _require_id(parent, "derived-from")
         if self.source_class == "DERIVED":
-            if not self.derived_from or not self.derivation_method:
+            if not self.derived_from or not self.derivation_method or not self.derivation_method_version:
                 raise ValidationError("derived-evidence-missing-provenance")
         elif self.derived_from:
             raise ValidationError("captured-evidence-cannot-have-derived-from")
@@ -147,6 +152,11 @@ class EvidenceItem:
             "classification": self.classification,
             "derived_from": list(self.derived_from),
             "derivation_method": self.derivation_method,
+            "derivation_method_version": self.derivation_method_version,
+            "authorization_status": self.authorization_status,
+            "representation": self.representation,
+            "time_source": self.time_source,
+            "time_trust": self.time_trust,
             "freshness_status": self.freshness_status,
             "freshness_policy": self.freshness_policy,
             "reachability": self.reachability,
@@ -228,6 +238,8 @@ class TryDDCResult:
     unresolved: tuple[dict[str, Any], ...] = ()
     limitations: tuple[str, ...] = ()
     synthesis: dict[str, Any] = field(default_factory=dict)
+    capabilities: tuple[CapabilityIdentity, ...] = ()
+    result_revision: int = 1
     minimum_coverage_met: bool = False
     predecessor_result_id: str | None = None
     retry_reason: str | None = None
@@ -250,6 +262,19 @@ class TryDDCResult:
         if self.risk_disposition not in RISK_DISPOSITIONS:
             raise ValidationError("invalid-risk-disposition")
         object.__setattr__(self, "analysis_time", _utc(self.analysis_time))
+        if not isinstance(self.result_revision, int) or self.result_revision < 1:
+            raise ValidationError("invalid-result-revision")
+        seen_caps: set[tuple[str, str, str, str]] = set()
+        for cap in self.capabilities:
+            key = (
+                cap.capability_id,
+                cap.capability_version,
+                cap.capability_digest,
+                cap.implementation_revision,
+            )
+            if key in seen_caps:
+                raise ValidationError("duplicate-result-capability")
+            seen_caps.add(key)
         if self.risk_disposition == "NO_HIGH_RISK_OBSERVED":
             if self.analysis_status != "COMPLETE" or not self.minimum_coverage_met:
                 raise ValidationError("no-high-risk-without-minimum-coverage")
@@ -273,6 +298,8 @@ class TryDDCResult:
             "evidentiary_status": self.evidentiary_status,
             "risk_disposition": self.risk_disposition,
             "analysis_time": self.analysis_time,
+            "result_revision": self.result_revision,
+            "capabilities": [cap.to_dict() for cap in self.capabilities],
             "claims": list(self.claims),
             "observations": list(self.observations),
             "determinations": list(self.determinations),
