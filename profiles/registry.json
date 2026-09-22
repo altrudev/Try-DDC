@@ -48,6 +48,14 @@
       "public": false,
       "execution_authority": false,
       "profile_digest": "sha256:656ae4b82a10f21a83cff6adf03829a43d2aed948e368ef13e9abbddd2643c6b"
+    },
+    {
+      "id": "blockchain.bitcoin.transaction.v1",
+      "version": "1",
+      "state": "IMPLEMENTING",
+      "public": false,
+      "execution_authority": false,
+      "profile_digest": "sha256:61e5c0d859e0e4089b3548beb9a42c8334e697613d14dce6f4ebd30c81004ae4"
     }
   ]
 }
