@@ -140,7 +140,18 @@ class SpineTests(unittest.TestCase):
         )
         self.assertEqual(snapshot["capabilities"][0]["runs"], "<5")
         self.assertEqual(snapshot["capabilities"][0]["completed"], "<5")
+        self.assertIsNone(snapshot["capabilities"][0]["first_exercised"])
+        self.assertIsNone(snapshot["capabilities"][0]["last_exercised"])
+        self.assertTrue(snapshot["capabilities"][0]["date_range_suppressed"])
         self.assertIn("snapshot_digest", snapshot)
+
+    def test_activity_snapshot_rejects_invalid_chain_digest(self):
+        with self.assertRaisesRegex(ValueError, "previous-snapshot-digest-invalid"):
+            aggregate_activity(
+                [],
+                generated_at="2026-09-21T23:03:00Z",
+                previous_snapshot_digest="not-a-digest",
+            )
 
     def test_activity_snapshot_separates_versions(self):
         cap2 = CapabilityIdentity(
