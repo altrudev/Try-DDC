@@ -110,6 +110,8 @@ class AdapterV2BridgeTests(unittest.TestCase):
                     "time": 1790090000,
                     "confirmations": 7,
                 }}
+            if method == "getblockhash":
+                return {"ok": True, "result": block}
             raise AssertionError(method)
 
         original = adapter._bitcoin_rpc_request
@@ -130,7 +132,7 @@ class AdapterV2BridgeTests(unittest.TestCase):
         self.assertFalse(result["wallet_authority"])
         self.assertFalse(result["arbitrary_rpc_authority"])
         methods = [item[0] for item in calls]
-        self.assertEqual(methods, ["getblockchaininfo", "getrawtransaction", "getblockheader", "getblockheader"])
+        self.assertEqual(methods, ["getblockchaininfo", "getrawtransaction", "getblockheader", "getblockhash", "getblockheader", "getblockhash"])
         self.assertFalse(any(method in methods for method in ("sendrawtransaction", "signrawtransactionwithwallet", "walletpassphrase")))
 
     def test_bitcoin_provider_missing_tx_is_not_global_nonexistence(self):
