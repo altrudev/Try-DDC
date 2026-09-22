@@ -1,10 +1,25 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime, timezone
+import re
 from typing import Iterable, Any
 
 from .canonical import sha256_digest
 from .model import ActivityReceipt
+
+
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def _utc(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception as exc:
+        raise ValueError("invalid-generated-at") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("generated-at-must-have-timezone")
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def aggregate_activity(
@@ -16,11 +31,17 @@ def aggregate_activity(
 ) -> dict[str, Any]:
     """Create a privacy-minimized public activity snapshot.
 
-    Exact low-volume counts stay internal. Public counts below the threshold are
-    rendered as "<N" to reduce correlation risk.
+    Low-volume groups suppress both exact counts and exact first/last dates so
+    public provenance cannot become a correlation side channel.
     """
     if privacy_threshold < 2:
         raise ValueError("privacy-threshold-too-low")
+    generated_at = _utc(generated_at)
+    if previous_snapshot_digest is not None and (
+        not isinstance(previous_snapshot_digest, str)
+        or not _DIGEST_RE.fullmatch(previous_snapshot_digest)
+    ):
+        raise ValueError("previous-snapshot-digest-invalid")
 
     grouped: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(
         lambda: {"runs": 0, "completed": 0, "first": None, "last": None}
@@ -41,6 +62,7 @@ def aggregate_activity(
 
     capabilities = []
     for (capability_id, version, digest), row in sorted(grouped.items()):
+        low_volume = row["runs"] < privacy_threshold
         capabilities.append(
             {
                 "capability_id": capability_id,
@@ -48,8 +70,9 @@ def aggregate_activity(
                 "capability_digest": digest,
                 "runs": public_count(row["runs"]),
                 "completed": public_count(row["completed"]),
-                "first_exercised": row["first"],
-                "last_exercised": row["last"],
+                "first_exercised": None if low_volume else row["first"],
+                "last_exercised": None if low_volume else row["last"],
+                "date_range_suppressed": low_volume,
             }
         )
 
@@ -61,6 +84,7 @@ def aggregate_activity(
         "semantics": {
             "runs": "bounded Try DDC runs, not unique users or validations",
             "completed": "runs that produced a COMPLETE bounded analysis",
+            "low_volume_dates": "suppressed with counts below the privacy threshold",
         },
         "capabilities": capabilities,
         "previous_snapshot_digest": previous_snapshot_digest,
