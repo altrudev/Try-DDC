@@ -36,6 +36,7 @@ class SolanaTransactionV1Tests(unittest.TestCase):
             "previousBlockhash": PREV,
             "blockHeight": 12000,
             "blockTime": 1790090000,
+            "signatures": [SIG],
         }
         return {
             "signature": SIG,
@@ -70,7 +71,8 @@ class SolanaTransactionV1Tests(unittest.TestCase):
         self.assertEqual(result.evidence_root, manifest.evidence_root)
         determinations = {x["kind"]: x for x in result.determinations}
         self.assertEqual(determinations["solana.transaction.observed"]["status"], "ESTABLISHED")
-        self.assertEqual(determinations["solana.transaction.execution"]["status"], "ESTABLISHED")
+        self.assertEqual(determinations["solana.transaction.execution"]["status"], "PARTIALLY_ESTABLISHED")
+        self.assertEqual(determinations["solana.transaction.inclusion"]["status"], "PARTIALLY_ESTABLISHED")
         self.assertEqual(determinations["solana.transaction.commitment"]["status"], "PARTIALLY_ESTABLISHED")
         self.assertTrue(any("not promoted" in x for x in result.limitations))
 
@@ -92,6 +94,14 @@ class SolanaTransactionV1Tests(unittest.TestCase):
         _manifest, result = self.analyze(value)
         self.assertEqual(result.analysis_status, "CAPTURE_FAILED")
         self.assertTrue(result.contradictions)
+
+    def test_block_signature_membership_is_required(self):
+        value = self.included()
+        value["block_after"]["signatures"] = ["7" * 88]
+        _manifest, result = self.analyze(value)
+        self.assertEqual(result.analysis_status, "CAPTURE_FAILED")
+        determinations = {x["kind"]: x for x in result.determinations}
+        self.assertEqual(determinations["solana.transaction.inclusion"]["status"], "CONTRADICTED")
 
     def test_context_must_cover_transaction_slot(self):
         value = self.included()
