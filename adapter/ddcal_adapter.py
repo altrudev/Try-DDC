@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DDCAL customer-side adapter v0.1.
+"""DDCAL customer-side adapter v0.2 candidate.
 
 The adapter runs inside the customer's environment. It accepts only a bounded
 assessment plan containing registered capability IDs. It never evaluates shell
@@ -36,7 +36,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
-VERSION = "ddcal-adapter-v0.1"
+VERSION = "ddcal-adapter-v0.2-candidate"
 PLAN_SCHEMA = "ddcal.assessment-plan.v1"
 CAPSULE_SCHEMA = "ddcal.evidence-capsule.v1"
 MAX_MANIFEST_FILES = 20000
@@ -135,9 +135,9 @@ def validate_plan(plan: dict[str, Any]) -> None:
     if not isinstance(export, dict):
         fail("export_policy must be an object")
     if export.get("allow_source") is True:
-        fail("v0.1 adapter refuses plans that authorize source-code export")
+        fail("v0.2 candidate adapter refuses plans that authorize source-code export")
     if int(export.get("max_excerpt_bytes", 0) or 0) != 0:
-        fail("v0.1 adapter does not export source excerpts")
+        fail("v0.2 candidate adapter does not export source excerpts")
 
 
 def ensure_within(root: Path, candidate: Path) -> Path:
@@ -620,7 +620,7 @@ def run_agent_replay_report(repo_root: Path, params: dict[str, Any], work: Path)
             sys.executable,
             "-m",
             "tryddc_v2.agent_trace_cli",
-            "--replay-report",
+            "--report",
             str(report_path),
             "--out-dir",
             str(out),
