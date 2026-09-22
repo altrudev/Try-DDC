@@ -42,6 +42,8 @@ class BitcoinTransactionV1Tests(unittest.TestCase):
             "active_block_hash_after": block,
             "best_block_hash": "7" * 64,
             "best_block_height": 900006,
+            "best_block_hash_after": "7" * 64,
+            "best_block_height_after": 900006,
             "rpc_origin": "bitcoin.example",
         }
 
@@ -94,6 +96,8 @@ class BitcoinTransactionV1Tests(unittest.TestCase):
             "transaction": None,
             "best_block_hash": "7" * 64,
             "best_block_height": 900006,
+            "best_block_hash_after": "7" * 64,
+            "best_block_height_after": 900006,
             "rpc_origin": "bitcoin.example",
         }
         _manifest, result = self.analyze(value)
@@ -118,6 +122,17 @@ class BitcoinTransactionV1Tests(unittest.TestCase):
         manifest1, _result1 = self.analyze(first)
         manifest2, _result2 = self.analyze(second)
         self.assertEqual(manifest1.target_id, manifest2.target_id)
+
+    def test_provider_tip_change_keeps_inclusion_but_unresolves_confirmation_count(self):
+        value = self.included()
+        value["best_block_hash_after"] = "8" * 64
+        value["best_block_height_after"] = 900007
+        _manifest, result = self.analyze(value)
+        determinations = {x["kind"]: x for x in result.determinations}
+        self.assertEqual(result.analysis_status, "COMPLETE")
+        self.assertEqual(determinations["bitcoin.transaction.inclusion"]["status"], "PARTIALLY_ESTABLISHED")
+        self.assertEqual(determinations["bitcoin.transaction.confirmations"]["status"], "UNRESOLVED")
+        self.assertTrue(any(x["kind"] == "bitcoin.provider-tip-stability" for x in result.unresolved))
 
     def test_profile_has_no_signing_or_broadcast_authority(self):
         _manifest, result = self.analyze(self.included())
