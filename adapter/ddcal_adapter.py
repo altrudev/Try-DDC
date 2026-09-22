@@ -5,14 +5,17 @@ The adapter runs inside the customer's environment. It accepts only a bounded
 assessment plan containing registered capability IDs. It never evaluates shell
 text from a plan and never exports source code by default.
 
-Current v0.1 capabilities:
+Current v0.2 candidate capabilities:
 - repo.static                -> invokes the local Try DDC analyzer
 - filesystem.manifest        -> hashes bounded local files without exporting contents
 - api.http.readonly          -> anonymous GET/HEAD/OPTIONS against an explicit HTTPS URL
 - blockchain.rpc.readonly    -> allowlisted read-only Ethereum JSON-RPC methods
 - blockchain.evm.contract.observe -> block-pinned EVM contract/proxy observation
 - blockchain.evm.transaction.observe -> read-only EVM transaction/receipt/inclusion observation
-- agent.replay.report          -> local Agent Replay report binding into agent.trace.v1
+- blockchain.bitcoin.transaction.observe -> read-only Bitcoin transaction/inclusion observation
+- blockchain.solana.transaction.observe -> read-only Solana transaction/slot/commitment observation
+- protocol.mcp.observe        -> read-only MCP discovery and advertised-surface observation
+- agent.replay.report         -> local Agent Replay report binding into agent.trace.v1
 
 The output is a DDCAL Evidence Capsule. Optional HMAC signing uses a local key
 file that is never supplied by the remote plan.
