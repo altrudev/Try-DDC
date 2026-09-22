@@ -217,6 +217,9 @@ def analyze_observation(
         raise ValidationError("solana-status-transaction-presence-mismatch")
 
     tx_slot = _slot(tx.get("slot"), "solana-transaction-slot")
+    block_slot = _slot(observation.get("block_slot"), "solana-block-slot")
+    if block_slot != tx_slot:
+        raise ValidationError("solana-block-slot-mismatch")
     if tx_slot != status["slot"]:
         raise ValidationError("solana-transaction-status-slot-mismatch")
 
@@ -234,6 +237,7 @@ def analyze_observation(
     if not isinstance(meta, dict):
         raise ValidationError("solana-transaction-meta-invalid")
     execution_succeeded = meta.get("err") is None
+    status_meta_consistent = status.get("err") == meta.get("err")
 
     block_before = observation.get("block_before")
     block_after = observation.get("block_after")
@@ -328,6 +332,7 @@ def analyze_observation(
         and context_monotonic
         and block_stable
         and block_signature_membership
+        and status_meta_consistent
         and context_covers_transaction_slot
     )
     analysis_status = "COMPLETE" if capture_ok else "CAPTURE_FAILED"
@@ -346,6 +351,8 @@ def analyze_observation(
         {
             "kind": "solana.transaction.execution",
             "provider_execution_succeeded": execution_succeeded,
+            "status_meta_consistent": status_meta_consistent,
+            "status_error": status.get("err"),
             "meta_error": meta.get("err"),
             "fee": meta.get("fee"),
             "compute_units_consumed": meta.get("computeUnitsConsumed"),
@@ -372,6 +379,7 @@ def analyze_observation(
             "block_stable": block_stable,
             "block_contains_signature": block_signature_membership,
             "block_signature_membership": block_signature_membership,
+            "status_meta_consistent": status_meta_consistent,
             "context_covers_transaction_slot": context_covers_transaction_slot,
             "genesis_stable": genesis_stable,
             "evidence_refs": [
@@ -459,7 +467,7 @@ def analyze_observation(
     if not capture_ok:
         contradictions = ({
             "kind": "solana.capture-contradiction",
-            "detail": "Genesis identity, provider context slots, slot block identity, or block-signature membership were inconsistent during the bounded capture.",
+            "detail": "Genesis identity, provider context slots, slot block identity, block-signature membership, or provider execution-status evidence were inconsistent during the bounded capture.",
             "genesis_stable": genesis_stable,
             "context_monotonic": context_monotonic,
             "block_stable": block_stable,
