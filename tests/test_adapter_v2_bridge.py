@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+import tempfile
 import unittest
 
 
@@ -18,6 +20,62 @@ class AdapterV2BridgeTests(unittest.TestCase):
         self.assertIn("blockchain.evm.transaction.observe", adapter.CAPABILITIES)
         for method in ("eth_sendTransaction", "eth_sendRawTransaction", "personal_unlockAccount"):
             self.assertNotIn(method, adapter.READONLY_RPC_METHODS)
+
+    def test_agent_replay_report_runs_locally_and_exports_only_commitments(self):
+        self.assertIn("agent.replay.report", adapter.CAPABILITIES)
+        report = {
+            "schema": "agent-replay.incident.v2",
+            "input_sha256": "1" * 64,
+            "canonical_sha256": "2" * 64,
+            "event_count": 1,
+            "expectation_coverage": {
+                "status": "NO_EXPECTATIONS",
+                "events_with_expectations": 0,
+                "total_events": 1,
+                "ratio": 0.0,
+            },
+            "timeline": [
+                {
+                    "event_id": "evt-1",
+                    "timestamp": "2026-09-22T17:00:00Z",
+                    "actor": "private-agent-label",
+                    "kind": "observation",
+                    "status": "UNASSESSED",
+                    "parent_ids": [],
+                }
+            ],
+            "first_provable_divergence": None,
+            "divergences": [],
+            "causal_chain": [],
+            "attribution": [],
+            "confidence": "LOW",
+            "evidence_gaps": [{"type": "UNASSESSED_EVENT", "event_id": "evt-1"}],
+            "evidence_completeness": "INCOMPLETE",
+            "reproducibility": "NOT_TESTED",
+            "reconstruction_status": "NO_DIVERGENCE_ESTABLISHED",
+        }
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            work = root / "work"
+            work.mkdir()
+            report_path = root / "incident.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            result = adapter.run_agent_replay_report(
+                root,
+                {"path": "incident.json"},
+                work,
+            )
+
+        self.assertEqual(result["capability"], "agent.replay.report")
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertFalse(result["source_exported"])
+        self.assertFalse(result["raw_report_exported"])
+        self.assertFalse(result["arbitrary_tool_authority"])
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("private-agent-label", serialized)
+        self.assertNotIn("timeline", serialized)
+        self.assertTrue(str(result["result_digest"]).startswith("sha256:"))
+        self.assertTrue(str(result["evidence_root"]).startswith("sha256:"))
 
     def test_transaction_capture_is_read_only_and_rechecks_inclusion_block(self):
         tx_hash = "0x" + "1" * 64
