@@ -49,6 +49,7 @@ class SolanaTransactionV1Tests(unittest.TestCase):
                 "err": None,
             },
             "transaction": tx,
+            "block_slot": 12345,
             "block_before": dict(block),
             "block_after": dict(block),
             "context_commitment": "finalized",
@@ -109,6 +110,13 @@ class SolanaTransactionV1Tests(unittest.TestCase):
         value["context_slot_after"] = 12001
         _manifest, result = self.analyze(value)
         self.assertEqual(result.analysis_status, "CAPTURE_FAILED")
+
+    def test_status_meta_error_disagreement_fails_capture(self):
+        value = self.included()
+        value["signature_status"]["err"] = {"InstructionError": [0, "Custom"]}
+        _manifest, result = self.analyze(value)
+        self.assertEqual(result.analysis_status, "CAPTURE_FAILED")
+        self.assertTrue(result.contradictions)
 
     def test_execution_error_is_not_success(self):
         value = self.included()
