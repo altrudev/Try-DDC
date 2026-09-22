@@ -77,6 +77,93 @@ class AdapterV2BridgeTests(unittest.TestCase):
         self.assertTrue(str(result["result_digest"]).startswith("sha256:"))
         self.assertTrue(str(result["evidence_root"]).startswith("sha256:"))
 
+    def test_mcp_observer_uses_only_discovery_and_list_methods(self):
+        self.assertIn("protocol.mcp.observe", adapter.CAPABILITIES)
+        calls = []
+
+        def fake_rpc(_endpoint, method, params, request_id):
+            calls.append((method, params, request_id))
+            if method == "server/discover":
+                return {
+                    "ok": True,
+                    "result": {
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                        "_meta": {
+                            "io.modelcontextprotocol/serverInfo": {
+                                "name": "fixture",
+                                "version": "1.0",
+                            }
+                        },
+                    },
+                    "headers": {},
+                    "http_protocol": 11,
+                }
+            if method == "tools/list":
+                return {"ok": True, "result": {"tools": [{"name": "lookup", "inputSchema": {"type": "object"}}]}}
+            if method == "resources/list":
+                return {"ok": True, "result": {"resources": [{"uri": "resource://one", "name": "one"}]}}
+            if method == "prompts/list":
+                return {"ok": True, "result": {"prompts": [{"name": "summary", "arguments": []}]}}
+            raise AssertionError(method)
+
+        original_rpc = adapter._mcp_rpc
+        original_tls = adapter._mcp_tls_certificate_sha256
+        adapter._mcp_rpc = fake_rpc
+        adapter._mcp_tls_certificate_sha256 = lambda _endpoint: "sha256:" + "a" * 64
+        try:
+            result = adapter.run_mcp_observe(
+                Path("."),
+                {"endpoint": "https://mcp.example/api", "max_pages": 5},
+                Path("."),
+            )
+        finally:
+            adapter._mcp_rpc = original_rpc
+            adapter._mcp_tls_certificate_sha256 = original_tls
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertFalse(result["tool_invocation_authority"])
+        self.assertFalse(result["prompt_invocation_authority"])
+        self.assertFalse(result["resource_read_authority"])
+        self.assertFalse(result["arbitrary_rpc_authority"])
+        methods = [x[0] for x in calls]
+        self.assertEqual(methods, ["server/discover", "tools/list", "resources/list", "prompts/list"])
+        self.assertFalse(any(method.endswith("/call") for method in methods))
+        self.assertTrue(result["snapshot"]["observation_complete"])
+        self.assertFalse(result["snapshot"]["transport"]["redirect_followed"])
+
+    def test_mcp_partial_inventory_fails_capture(self):
+        calls = []
+
+        def fake_rpc(_endpoint, method, params, request_id):
+            calls.append(method)
+            if method == "server/discover":
+                return {
+                    "ok": True,
+                    "result": {
+                        "supportedVersions": ["2026-07-28"],
+                        "capabilities": {"tools": {}},
+                    },
+                    "headers": {},
+                }
+            if method == "tools/list":
+                return {"ok": False, "status": "TRANSPORT_UNAVAILABLE"}
+            raise AssertionError(method)
+
+        original_rpc = adapter._mcp_rpc
+        adapter._mcp_rpc = fake_rpc
+        try:
+            result = adapter.run_mcp_observe(
+                Path("."),
+                {"endpoint": "https://mcp.example/api"},
+                Path("."),
+            )
+        finally:
+            adapter._mcp_rpc = original_rpc
+
+        self.assertEqual(result["status"], "CAPTURE_FAILED")
+        self.assertEqual(result["failed_inventory"], "tools")
+
     def test_transaction_capture_is_read_only_and_rechecks_inclusion_block(self):
         tx_hash = "0x" + "1" * 64
         block_hash = "0x" + "a" * 64
