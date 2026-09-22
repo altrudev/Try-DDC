@@ -57,6 +57,7 @@ _REGISTERED_PRODUCER_CAPABILITIES = {
     "blockchain.rpc.readonly",
     "blockchain.evm.contract.observe",
     "blockchain.evm.transaction.observe",
+    "blockchain.bitcoin.transaction.observe",
     "agent.replay.report",
     "protocol.mcp.observe",
 }
