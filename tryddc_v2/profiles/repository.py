@@ -131,12 +131,14 @@ def run_repository_v2(
     )
 
     evidence: list[EvidenceItem] = []
+    captured_hashes: dict[str, str] = {}
     for index, (rel, size, _priority) in enumerate(selected, start=1):
         path = root / rel
         try:
             digest = _sha256_file(path)
         except OSError:
             continue
+        captured_hashes[rel] = digest
         evidence.append(
             EvidenceItem(
                 evidence_id=f"evidence:file:{index:04d}",
@@ -200,6 +202,23 @@ def run_repository_v2(
     )
 
     legacy_result = legacy.scan(root)
+
+    post_observed, post_symlinks, post_truncated = _bounded_inventory(root)
+    file_drift: list[str] = []
+    for rel, expected_digest in captured_hashes.items():
+        try:
+            current_digest = _sha256_file(root / rel)
+        except OSError:
+            current_digest = "MISSING"
+        if current_digest != expected_digest:
+            file_drift.append(rel)
+    tree_drift = (
+        observed != post_observed
+        or sorted(symlinks) != sorted(post_symlinks)
+        or inventory_truncated != post_truncated
+    )
+    capture_drift = bool(file_drift or tree_drift)
+
     disposition_map = {
         "BLOCKED": "HIGH_RISK_OBSERVED",
         "REVIEW_REQUIRED": "REVIEW_REQUIRED",
@@ -207,6 +226,9 @@ def run_repository_v2(
     }
     risk = disposition_map.get(legacy_result.get("disposition"), "REVIEW_REQUIRED")
     minimum_coverage_met = legacy_result.get("disposition") == "NO_HIGH_RISK_OBSERVED"
+    if capture_drift:
+        risk = "REVIEW_REQUIRED"
+        minimum_coverage_met = False
 
     result_seed = {
         "case_id": case_id,
@@ -221,6 +243,13 @@ def run_repository_v2(
             "kind": "repository.coverage",
             "evidence_refs": ["evidence:repository:structure"],
             "value": dict(legacy_result.get("coverage", {})),
+        },
+        {
+            "kind": "repository.capture-stability",
+            "stable": not capture_drift,
+            "changed_files": sorted(file_drift),
+            "tree_changed": tree_drift,
+            "evidence_refs": ["evidence:repository:structure"],
         },
     )
     determinations = tuple(
@@ -262,15 +291,24 @@ def run_repository_v2(
         profile_version=PROFILE_DESCRIPTOR["version"],
         profile_digest=PROFILE_DIGEST,
         evidence_root=manifest.evidence_root,
-        analysis_status="COMPLETE",
-        evidentiary_status="PARTIALLY_ESTABLISHED",
+        analysis_status="CAPTURE_FAILED" if capture_drift else "COMPLETE",
+        evidentiary_status="UNRESOLVED" if capture_drift else "PARTIALLY_ESTABLISHED",
         risk_disposition=risk,
         analysis_time=analysis_time,
         claims=(),
         observations=observations,
         determinations=determinations,
         findings=findings,
-        contradictions=(),
+        contradictions=(
+            ({
+                "kind": "repository.capture-to-analysis-drift",
+                "status": "CONTRADICTED",
+                "changed_files": sorted(file_drift),
+                "tree_changed": tree_drift,
+                "detail": "Repository state changed after evidence capture and before/through analysis; findings are not treated as bound to one frozen state.",
+                "evidence_refs": ["evidence:repository:structure"],
+            },) if capture_drift else ()
+        ),
         unresolved=tuple(
             {"kind": "limitation", "detail": limitation}
             for limitation in legacy_result.get("limitations", [])
@@ -281,6 +319,7 @@ def run_repository_v2(
             "version": "1",
             "legacy_tool_version": legacy.VERSION,
             "legacy_disposition": legacy_result.get("disposition"),
+            "capture_to_analysis_stable": not capture_drift,
         },
         capabilities=(capability,),
         minimum_coverage_met=minimum_coverage_met,
