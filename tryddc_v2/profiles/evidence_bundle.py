@@ -58,6 +58,7 @@ _REGISTERED_PRODUCER_CAPABILITIES = {
     "blockchain.evm.contract.observe",
     "blockchain.evm.transaction.observe",
     "blockchain.bitcoin.transaction.observe",
+    "blockchain.solana.transaction.observe",
     "agent.replay.report",
     "protocol.mcp.observe",
 }
