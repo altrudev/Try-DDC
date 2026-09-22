@@ -25,9 +25,11 @@ import json
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -621,6 +623,72 @@ def sign_capsule(capsule: dict[str, Any], key_file: Path | None) -> dict[str, An
     return capsule
 
 
+def _v2_digest(value: Any) -> str:
+    # Try DDC v2 canonical JSON includes one trailing newline.
+    return "sha256:" + hashlib.sha256(canonical_bytes(value) + b"\n").hexdigest()
+
+
+def _v2_target_id(plan: dict[str, Any]) -> str:
+    descriptor = {
+        "profile_id": plan.get("profile_id"),
+        "target": plan.get("target", {}),
+    }
+    return "target:" + _v2_digest(descriptor).split(":", 1)[1][:24]
+
+
+def _v2_classification(capability_id: str) -> str:
+    # Network chain observations are public protocol data. Local repository and
+    # filesystem commitments remain customer-private by default.
+    if capability_id.startswith("blockchain.evm."):
+        return "PUBLIC"
+    return "CUSTOMER_PRIVATE"
+
+
+def build_v2_capsule(plan: dict[str, Any], results: list[dict[str, Any]]) -> dict[str, Any]:
+    evidence = []
+    for index, result in enumerate(results, start=1):
+        capability_id = str(result.get("capability") or "")
+        if capability_id not in CAPABILITIES:
+            fail("cannot export unregistered capability result")
+        evidence.append({
+            "evidence_id": f"evidence:capability:{index:04d}",
+            "capability_id": capability_id,
+            "classification": _v2_classification(capability_id),
+            "status": str(result.get("status") or "INCOMPLETE"),
+            "digest": _v2_digest(result),
+            "freshness_status": "UNRESOLVED",
+            "freshness_policy": "producer-capture-time-only",
+        })
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    capsule = {
+        "schema": "try-ddc-evidence-capsule/2",
+        "capsule_id": "capsule:" + secrets.token_hex(16),
+        "target_id": _v2_target_id(plan),
+        "nonce": secrets.token_hex(16),
+        "created_at": now,
+        "producer": {
+            "product": "ddcal-adapter",
+            "version": VERSION,
+            "mode": "customer-side",
+            "plan_digest": _v2_digest(plan),
+            "profile_id": str(plan.get("profile_id") or ""),
+        },
+        "export": {
+            "source_code_exported": False,
+            "source_excerpts_exported": False,
+            "arbitrary_shell_authority": False,
+            "private_key_authority": False,
+            "transaction_signing_authority": False,
+            "transaction_broadcast_authority": False,
+            "raw_capability_payloads_exported": False,
+        },
+        "evidence": evidence,
+    }
+    capsule["capsule_digest"] = _v2_digest(capsule)
+    return capsule
+
+
 def run_plan(plan_path: Path, repo_root: Path, out_dir: Path, signing_key: Path | None) -> dict[str, Any]:
     plan = read_json(plan_path)
     validate_plan(plan)
@@ -655,7 +723,19 @@ def run_plan(plan_path: Path, repo_root: Path, out_dir: Path, signing_key: Path 
     (out_dir / "ddcal-evidence-capsule.json.sha256").write_text(
         f"{sha256_file(capsule_path)}  {capsule_path.name}\n", encoding="utf-8"
     )
-    return {"capsule": str(capsule_path), "sha256": sha256_file(capsule_path)}
+
+    capsule_v2 = build_v2_capsule(plan, results)
+    capsule_v2_path = out_dir / "try-ddc-evidence-capsule-v2.json"
+    capsule_v2_path.write_bytes(canonical_bytes(capsule_v2) + b"\n")
+    (out_dir / "try-ddc-evidence-capsule-v2.json.sha256").write_text(
+        f"{sha256_file(capsule_v2_path)}  {capsule_v2_path.name}\n", encoding="utf-8"
+    )
+    return {
+        "capsule": str(capsule_path),
+        "sha256": sha256_file(capsule_path),
+        "capsule_v2": str(capsule_v2_path),
+        "capsule_v2_sha256": sha256_file(capsule_v2_path),
+    }
 
 
 def main() -> int:
