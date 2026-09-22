@@ -353,12 +353,9 @@ def analyze_observation(
         },
         {
             "kind": "solana.transaction.inclusion",
-            "status": "PARTIALLY_ESTABLISHED" if capture_ok else "CONTRADICTED",
-            "detail": (
-                "The provider returned the target signature in a stable block-signature inventory at the transaction slot."
-                if capture_ok
-                else "The bounded block observations do not consistently contain the transaction signature at the reported slot."
-            ),
+            "slot": tx_slot,
+            "block_stable": block_stable,
+            "block_contains_signature": block_signature_membership,
             "evidence_refs": [
                 "evidence:solana-transaction",
                 "evidence:solana-block-before",
@@ -413,6 +410,20 @@ def analyze_observation(
             "evidence_refs": ["evidence:solana-transaction"],
         },
         {
+            "kind": "solana.transaction.inclusion",
+            "status": "PARTIALLY_ESTABLISHED" if capture_ok else "CONTRADICTED",
+            "detail": (
+                "The provider returned the target signature in a stable block-signature inventory at the transaction slot."
+                if capture_ok
+                else "The bounded block observations do not consistently contain the transaction signature at the reported slot."
+            ),
+            "evidence_refs": [
+                "evidence:solana-transaction",
+                "evidence:solana-block-before",
+                "evidence:solana-block-after",
+            ],
+        },
+        {
             "kind": "solana.transaction.commitment",
             "status": "PARTIALLY_ESTABLISHED" if capture_ok and commitment_sufficient else "UNRESOLVED",
             "detail": (
@@ -448,10 +459,11 @@ def analyze_observation(
     if not capture_ok:
         contradictions = ({
             "kind": "solana.capture-contradiction",
-            "detail": "Genesis identity, provider context slots, or slot block identity were inconsistent during the bounded capture.",
+            "detail": "Genesis identity, provider context slots, slot block identity, or block-signature membership were inconsistent during the bounded capture.",
             "genesis_stable": genesis_stable,
             "context_monotonic": context_monotonic,
             "block_stable": block_stable,
+            "block_signature_membership": block_signature_membership,
             "context_covers_transaction_slot": context_covers_transaction_slot,
             "evidence_refs": [
                 "evidence:solana-block-before",
