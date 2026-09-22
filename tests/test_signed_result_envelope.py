@@ -70,6 +70,29 @@ class SignedResultEnvelopeTests(unittest.TestCase):
         self.assertEqual(envelope["payload"]["evidence_root"], result["capture"]["evidence_root"])
         self.assertEqual(len(envelope["payload"]["capabilities"]), 1)
 
+    def test_embedded_result_digest_must_match_canonical_payload(self):
+        result = self.result()
+        from tryddc_v2.canonical import sha256_digest
+        result["result_digest"] = sha256_digest(result)
+        envelope = sign_result(
+            result,
+            private_key_path=self.private,
+            public_key_path=self.public,
+            issued_at="2026-09-22T17:01:00Z",
+        )
+        self.assertTrue(verify_signed_result(envelope, public_key_path=self.public, result=result))
+        self.assertEqual(envelope["payload"]["result_digest"], result["result_digest"])
+
+        broken = dict(result)
+        broken["result_digest"] = "sha256:" + "0" * 64
+        with self.assertRaisesRegex(Exception, "result-digest-mismatch"):
+            sign_result(
+                broken,
+                private_key_path=self.private,
+                public_key_path=self.public,
+                issued_at="2026-09-22T17:01:00Z",
+            )
+
     def test_result_tamper_breaks_binding(self):
         result = self.result()
         envelope = sign_result(
