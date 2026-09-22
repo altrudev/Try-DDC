@@ -21,7 +21,7 @@ PROFILE_DIGEST = sha256_digest(PROFILE_DESCRIPTOR)
 CAPTURE_DESCRIPTOR = {
     "id": "blockchain.bitcoin.transaction.observe",
     "version": "1",
-    "rpc_methods": ["getblockchaininfo", "getrawtransaction", "getblockheader"],
+    "rpc_methods": ["getblockchaininfo", "getrawtransaction", "getblockheader", "getblockhash"],
     "execution_authority": False,
     "transaction_signing_authority": False,
     "transaction_broadcast_authority": False,
@@ -68,6 +68,8 @@ def analyze_observation(
     tx = observation.get("transaction")
     header_before = observation.get("block_header_before")
     header_after = observation.get("block_header_after")
+    best_block_hash = _require_hash(observation.get("best_block_hash"), "bitcoin-best-block-hash")
+    best_block_height = _require_nonnegative_int(observation.get("best_block_height"), "bitcoin-best-block-height")
 
     if tx is None:
         target_hash = sha256_digest({
@@ -93,6 +95,8 @@ def analyze_observation(
                     "network": network,
                     "transaction_id": requested_txid,
                     "observed": None,
+                    "best_block_hash": best_block_hash,
+                    "best_block_height": best_block_height,
                 }),
                 captured_at=captured_at,
                 source_identity=str(observation.get("rpc_origin") or "bitcoin-rpc"),
@@ -146,6 +150,8 @@ def analyze_observation(
                 "network": network,
                 "transaction_id": requested_txid,
                 "observed": False,
+                "provider_best_block_hash": best_block_hash,
+                "provider_best_block_height": best_block_height,
                 "evidence_refs": ["evidence:bitcoin-transaction-query"],
             },),
             determinations=({
@@ -186,9 +192,12 @@ def analyze_observation(
     block_hash_raw = tx.get("blockhash")
     included = block_hash_raw is not None
     confirmations = _require_nonnegative_int(tx.get("confirmations", 0), "bitcoin-confirmations")
+    active_block_hash_before_raw = observation.get("active_block_hash_before")
+    active_block_hash_after_raw = observation.get("active_block_hash_after")
 
     stable_anchor = False
     anchor_consistent = False
+    active_chain_consistent = False
     block_hash = None
     block_height = None
     if included:
@@ -209,12 +218,14 @@ def analyze_observation(
         stable_anchor = before_id == after_id
         anchor_consistent = before_id[0] == block_hash
         block_height = before_id[1]
+        active_before = _require_hash(active_block_hash_before_raw, "bitcoin-active-block-hash-before")
+        active_after = _require_hash(active_block_hash_after_raw, "bitcoin-active-block-hash-after")
+        active_chain_consistent = active_before == block_hash and active_after == block_hash
 
     target_hash = sha256_digest({
         "ecosystem": "bitcoin",
         "network": network,
         "transaction_id": requested_txid,
-        "block_hash": block_hash,
     }).split(":", 1)[1]
     target_id = "target:" + target_hash[:24]
     case_id = "case:" + target_hash[24:48]
@@ -229,14 +240,16 @@ def analyze_observation(
         ("evidence:bitcoin-transaction", tx, "rpc:getrawtransaction"),
         ("evidence:bitcoin-chain-context", {
             "network": network,
-            "best_block_hash": observation.get("best_block_hash"),
-            "best_block_height": observation.get("best_block_height"),
+            "best_block_hash": best_block_hash,
+            "best_block_height": best_block_height,
         }, "rpc:getblockchaininfo"),
     ]
     if included:
         raw_items.extend([
             ("evidence:bitcoin-block-header-before", header_before, "rpc:getblockheader"),
+            ("evidence:bitcoin-active-block-before", active_block_hash_before_raw, "rpc:getblockhash"),
             ("evidence:bitcoin-block-header-after", header_after, "rpc:getblockheader"),
+            ("evidence:bitcoin-active-block-after", active_block_hash_after_raw, "rpc:getblockhash"),
         ])
 
     evidence = tuple(
@@ -254,7 +267,7 @@ def analyze_observation(
             representation="BITCOIN_RPC_OBSERVATION",
             time_source="observer-clock",
             time_trust="UNRESOLVED",
-            freshness_status="ESTABLISHED" if (not included or stable_anchor) else "UNRESOLVED",
+            freshness_status="ESTABLISHED" if (not included or (stable_anchor and active_chain_consistent)) else "UNRESOLVED",
             freshness_policy="transaction-plus-block-header-recheck",
             reachability="ESTABLISHED",
             discoverability="ESTABLISHED",
@@ -277,7 +290,7 @@ def analyze_observation(
         frozen_at=captured_at,
     )
 
-    capture_ok = (not included) or (stable_anchor and anchor_consistent)
+    capture_ok = (not included) or (stable_anchor and anchor_consistent and active_chain_consistent)
     analysis_status = "COMPLETE" if capture_ok else "CAPTURE_FAILED"
     evidentiary_status = "PARTIALLY_ESTABLISHED" if capture_ok else "UNRESOLVED"
 
@@ -304,8 +317,10 @@ def analyze_observation(
             "provider_confirmations": confirmations,
             "stable_header_recheck": stable_anchor if included else None,
             "header_matches_transaction_block": anchor_consistent if included else None,
+            "active_chain_matches_before": active_chain_consistent if included else None,
+            "active_chain_matches_after": active_chain_consistent if included else None,
             "evidence_refs": (
-                ["evidence:bitcoin-transaction", "evidence:bitcoin-block-header-before", "evidence:bitcoin-block-header-after"]
+                ["evidence:bitcoin-transaction", "evidence:bitcoin-block-header-before", "evidence:bitcoin-active-block-before", "evidence:bitcoin-block-header-after", "evidence:bitcoin-active-block-after"]
                 if included else ["evidence:bitcoin-transaction"]
             ),
         },
@@ -329,16 +344,18 @@ def analyze_observation(
     if included:
         determinations.append({
             "kind": "bitcoin.transaction.inclusion",
-            "status": "PARTIALLY_ESTABLISHED" if stable_anchor and anchor_consistent else "CONTRADICTED",
+            "status": "PARTIALLY_ESTABLISHED" if stable_anchor and anchor_consistent and active_chain_consistent else "CONTRADICTED",
             "detail": (
-                "The provider binds the transaction to a block whose header identity was stable across the bounded recheck. No independent Merkle membership proof is performed."
-                if stable_anchor and anchor_consistent
+                "The provider binds the transaction to a block whose header identity was stable and whose height resolved to the same active-chain block hash before and after the bounded capture. No independent Merkle membership proof is performed."
+                if stable_anchor and anchor_consistent and active_chain_consistent
                 else "Block inclusion evidence was unstable or inconsistent during the bounded capture."
             ),
             "evidence_refs": [
                 "evidence:bitcoin-transaction",
                 "evidence:bitcoin-block-header-before",
+                "evidence:bitcoin-active-block-before",
                 "evidence:bitcoin-block-header-after",
+                "evidence:bitcoin-active-block-after",
             ],
         })
         determinations.append({
@@ -373,7 +390,7 @@ def analyze_observation(
         })
 
     limitations = (
-        "Provider-reported block inclusion and confirmations are evidence from that provider, not independent consensus or Merkle-membership verification.",
+        "Provider-reported active-chain binding and confirmations are evidence from that provider, not independent consensus or Merkle-membership verification.",
         "Transaction inclusion does not establish authorization, ownership, business meaning, or downstream economic consequence.",
         "No wallet, private key, signing, broadcast, fee-bump, or transaction-construction authority exists.",
         "Unconfirmed observation does not establish network-wide mempool acceptance.",
