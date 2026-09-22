@@ -25,7 +25,7 @@
     {
       "id": "evidence.bundle.v1",
       "version": "1",
-      "state": "DESIGNED",
+      "state": "IMPLEMENTING",
       "public": false,
       "execution_authority": false
     },
