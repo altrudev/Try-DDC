@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import unittest
 
-from tryddc_v2.profiles import agent_trace, evidence_bundle, evm_contract, evm_transaction, mcp_observe, repository
+from tryddc_v2.profiles import agent_trace, bitcoin_transaction, evidence_bundle, evm_contract, evm_transaction, mcp_observe, repository
 
 
 class ProfileRegistryTests(unittest.TestCase):
@@ -14,6 +14,7 @@ class ProfileRegistryTests(unittest.TestCase):
             repository.PROFILE_DESCRIPTOR["id"]: repository.PROFILE_DIGEST,
             evm_contract.PROFILE_DESCRIPTOR["id"]: evm_contract.PROFILE_DIGEST,
             evm_transaction.PROFILE_DESCRIPTOR["id"]: evm_transaction.PROFILE_DIGEST,
+            bitcoin_transaction.PROFILE_DESCRIPTOR["id"]: bitcoin_transaction.PROFILE_DIGEST,
             evidence_bundle.PROFILE_DESCRIPTOR["id"]: evidence_bundle.PROFILE_DIGEST,
             agent_trace.PROFILE_DESCRIPTOR["id"]: agent_trace.PROFILE_DIGEST,
             mcp_observe.PROFILE_DESCRIPTOR["id"]: mcp_observe.PROFILE_DIGEST,
