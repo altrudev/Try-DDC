@@ -361,6 +361,7 @@ def analyze_observation(
                 "downstream_consequence",
             ],
         },
+        capabilities=(capability,),
         minimum_coverage_met=False,
     )
     return manifest, result
