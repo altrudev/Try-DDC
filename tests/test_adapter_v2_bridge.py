@@ -77,6 +77,86 @@ class AdapterV2BridgeTests(unittest.TestCase):
         self.assertTrue(str(result["result_digest"]).startswith("sha256:"))
         self.assertTrue(str(result["evidence_root"]).startswith("sha256:"))
 
+    def test_bitcoin_observer_uses_read_only_methods_and_never_wallet_or_broadcast(self):
+        self.assertIn("blockchain.bitcoin.transaction.observe", adapter.CAPABILITIES)
+        calls = []
+        txid = "1" * 64
+        block = "2" * 64
+
+        def fake_rpc(_url, method, params, request_id):
+            calls.append((method, params, request_id))
+            if method == "getblockchaininfo":
+                return {"ok": True, "result": {"chain": "main", "blocks": 900006, "bestblockhash": "7" * 64}}
+            if method == "getrawtransaction":
+                return {"ok": True, "result": {
+                    "txid": txid,
+                    "hash": "5" * 64,
+                    "version": 2,
+                    "size": 222,
+                    "vsize": 141,
+                    "weight": 564,
+                    "locktime": 0,
+                    "vin": [],
+                    "vout": [],
+                    "blockhash": block,
+                    "confirmations": 7,
+                }}
+            if method == "getblockheader":
+                return {"ok": True, "result": {
+                    "hash": block,
+                    "height": 900000,
+                    "previousblockhash": "3" * 64,
+                    "merkleroot": "4" * 64,
+                    "time": 1790090000,
+                    "confirmations": 7,
+                }}
+            raise AssertionError(method)
+
+        original = adapter._bitcoin_rpc_request
+        adapter._bitcoin_rpc_request = fake_rpc
+        try:
+            result = adapter.run_bitcoin_transaction_observe(
+                Path("."),
+                {"rpc_url": "https://bitcoin.example", "transaction_id": txid},
+                Path("."),
+            )
+        finally:
+            adapter._bitcoin_rpc_request = original
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertFalse(result["transaction_signing_authority"])
+        self.assertFalse(result["transaction_broadcast_authority"])
+        self.assertFalse(result["private_key_authority"])
+        self.assertFalse(result["wallet_authority"])
+        self.assertFalse(result["arbitrary_rpc_authority"])
+        methods = [item[0] for item in calls]
+        self.assertEqual(methods, ["getblockchaininfo", "getrawtransaction", "getblockheader", "getblockheader"])
+        self.assertFalse(any(method in methods for method in ("sendrawtransaction", "signrawtransactionwithwallet", "walletpassphrase")))
+
+    def test_bitcoin_provider_missing_tx_is_not_global_nonexistence(self):
+        txid = "1" * 64
+
+        def fake_rpc(_url, method, params, request_id):
+            if method == "getblockchaininfo":
+                return {"ok": True, "result": {"chain": "main", "blocks": 1, "bestblockhash": "7" * 64}}
+            if method == "getrawtransaction":
+                return {"ok": False, "status": "RPC_ERROR", "rpc_error_code": -5}
+            raise AssertionError(method)
+
+        original = adapter._bitcoin_rpc_request
+        adapter._bitcoin_rpc_request = fake_rpc
+        try:
+            result = adapter.run_bitcoin_transaction_observe(
+                Path("."),
+                {"rpc_url": "https://bitcoin.example", "transaction_id": txid},
+                Path("."),
+            )
+        finally:
+            adapter._bitcoin_rpc_request = original
+
+        self.assertEqual(result["status"], "COMPLETE")
+        self.assertIsNone(result["observation"]["transaction"])
+
     def test_mcp_observer_uses_only_discovery_and_list_methods(self):
         self.assertIn("protocol.mcp.observe", adapter.CAPABILITIES)
         calls = []
