@@ -1,0 +1,23 @@
+{
+  "schema": "ddcal.assessment-plan.v1",
+  "job_id": "ddcal_job_evmtxdemo0001",
+  "profile_id": "ddcal.blockchain.evm.transaction.v1",
+  "expires_unix": 4102444800,
+  "target": {
+    "kind": "evm-transaction",
+    "transaction_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "capabilities": [
+    {
+      "id": "blockchain.evm.transaction.observe",
+      "params": {
+        "rpc_url": "https://RPC-ENDPOINT.example",
+        "transaction_hash": "0x1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    }
+  ],
+  "export_policy": {
+    "allow_source": false,
+    "max_excerpt_bytes": 0
+  }
+}
