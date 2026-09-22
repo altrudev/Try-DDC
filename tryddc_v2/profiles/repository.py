@@ -282,6 +282,7 @@ def run_repository_v2(
             "legacy_tool_version": legacy.VERSION,
             "legacy_disposition": legacy_result.get("disposition"),
         },
+        capabilities=(capability,),
         minimum_coverage_met=minimum_coverage_met,
     )
     return manifest, result, legacy_result
