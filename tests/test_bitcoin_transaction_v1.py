@@ -38,6 +38,8 @@ class BitcoinTransactionV1Tests(unittest.TestCase):
             },
             "block_header_before": dict(header),
             "block_header_after": dict(header),
+            "active_block_hash_before": block,
+            "active_block_hash_after": block,
             "best_block_hash": "7" * 64,
             "best_block_height": 900006,
             "rpc_origin": "bitcoin.example",
@@ -90,11 +92,32 @@ class BitcoinTransactionV1Tests(unittest.TestCase):
             "network": "main",
             "transaction_id": "1" * 64,
             "transaction": None,
+            "best_block_hash": "7" * 64,
+            "best_block_height": 900006,
             "rpc_origin": "bitcoin.example",
         }
         _manifest, result = self.analyze(value)
         self.assertEqual(result.evidentiary_status, "NOT_ESTABLISHED")
         self.assertTrue(any(x["kind"] == "bitcoin.transaction.global-existence" for x in result.unresolved))
+
+    def test_active_chain_mismatch_fails_capture(self):
+        value = self.included()
+        value["active_block_hash_after"] = "8" * 64
+        _manifest, result = self.analyze(value)
+        self.assertEqual(result.analysis_status, "CAPTURE_FAILED")
+        self.assertTrue(result.contradictions)
+
+    def test_target_identity_does_not_change_with_inclusion_block(self):
+        first = self.included()
+        second = self.included()
+        second["transaction"]["blockhash"] = "8" * 64
+        second["block_header_before"]["hash"] = "8" * 64
+        second["block_header_after"]["hash"] = "8" * 64
+        second["active_block_hash_before"] = "8" * 64
+        second["active_block_hash_after"] = "8" * 64
+        manifest1, _result1 = self.analyze(first)
+        manifest2, _result2 = self.analyze(second)
+        self.assertEqual(manifest1.target_id, manifest2.target_id)
 
     def test_profile_has_no_signing_or_broadcast_authority(self):
         _manifest, result = self.analyze(self.included())
