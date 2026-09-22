@@ -595,16 +595,6 @@ def run_evm_transaction_observe(_repo_root: Path, params: dict[str, Any], _work:
     }
 
 
-class _NoRedirect(HTTPError):
-    pass
-
-
-class _NoRedirectHandler:
-    # Placeholder marker; urllib redirect handling is implemented through a
-    # local HTTPRedirectHandler subclass created inside _mcp_rpc.
-    pass
-
-
 def _mcp_rpc(endpoint: str, method: str, params: dict[str, Any], request_id: int) -> dict[str, Any]:
     from urllib.request import build_opener, HTTPRedirectHandler
 
