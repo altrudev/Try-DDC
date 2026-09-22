@@ -27,6 +27,8 @@ import os
 from pathlib import Path
 import re
 import secrets
+import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -68,6 +70,7 @@ CAPABILITIES = {
     "blockchain.evm.contract.observe": "Block-pinned read-only EVM contract and common proxy observation",
     "blockchain.evm.transaction.observe": "Read-only EVM transaction, receipt, and inclusion observation",
     "agent.replay.report": "Local Agent Replay reconstruction binding into Try DDC agent.trace.v1",
+    "protocol.mcp.observe": "Anonymous read-only MCP discovery and advertised-surface observation",
 }
 
 
@@ -592,6 +595,261 @@ def run_evm_transaction_observe(_repo_root: Path, params: dict[str, Any], _work:
     }
 
 
+class _NoRedirect(HTTPError):
+    pass
+
+
+class _NoRedirectHandler:
+    # Placeholder marker; urllib redirect handling is implemented through a
+    # local HTTPRedirectHandler subclass created inside _mcp_rpc.
+    pass
+
+
+def _mcp_rpc(endpoint: str, method: str, params: dict[str, Any], request_id: int) -> dict[str, Any]:
+    from urllib.request import build_opener, HTTPRedirectHandler
+
+    class NoRedirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    payload = canonical_bytes({
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "method": method,
+        "params": {
+            **params,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {"name": "try-ddc", "version": VERSION},
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
+        },
+    })
+    req = Request(endpoint, method="POST", data=payload, headers={
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": method,
+        "User-Agent": f"DDCAL-Adapter/{VERSION}",
+    })
+    opener = build_opener(NoRedirect())
+    try:
+        with opener.open(req, timeout=20) as response:
+            raw = response.read(MAX_RPC_BYTES + 1)
+            status = response.status
+            protocol = getattr(response, "version", None)
+            headers = dict(response.headers.items())
+    except HTTPError as exc:
+        return {
+            "ok": False,
+            "status": "HTTP_ERROR",
+            "http_status": exc.code,
+            "location": exc.headers.get("Location"),
+            "www_authenticate": exc.headers.get("WWW-Authenticate"),
+        }
+    except URLError:
+        return {"ok": False, "status": "TRANSPORT_UNAVAILABLE"}
+    if len(raw) > MAX_RPC_BYTES:
+        return {"ok": False, "status": "RESPONSE_TOO_LARGE"}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"ok": False, "status": "INVALID_JSON", "response_sha256": sha256_bytes(raw)}
+    if not isinstance(decoded, dict):
+        return {"ok": False, "status": "INVALID_RPC_RESPONSE"}
+    if decoded.get("error") is not None:
+        return {"ok": False, "status": "RPC_ERROR", "error": decoded.get("error")}
+    if "result" not in decoded:
+        return {"ok": False, "status": "RPC_RESULT_MISSING"}
+    return {
+        "ok": True,
+        "result": decoded.get("result"),
+        "http_status": status,
+        "http_protocol": protocol,
+        "headers": {
+            k.lower(): v[:1000]
+            for k, v in headers.items()
+            if k.lower() in {"content-type", "www-authenticate"}
+        },
+        "response_sha256": sha256_bytes(raw),
+    }
+
+
+def _mcp_tls_certificate_sha256(endpoint: str) -> str | None:
+    parsed = urlparse(endpoint)
+    host = parsed.hostname
+    if not host:
+        return None
+    port = parsed.port or 443
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((host, port), timeout=10) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as conn:
+                der = conn.getpeercert(binary_form=True)
+        return "sha256:" + hashlib.sha256(der).hexdigest()
+    except Exception:
+        return None
+
+
+def _mcp_paginate(endpoint: str, method: str, list_key: str, request_id: int, max_pages: int) -> tuple[list[Any], int, str | None]:
+    cursor = None
+    out: list[Any] = []
+    for _page in range(max_pages):
+        params: dict[str, Any] = {}
+        if cursor:
+            params["cursor"] = cursor
+        response = _mcp_rpc(endpoint, method, params, request_id)
+        request_id += 1
+        if not response.get("ok"):
+            return [], request_id, str(response.get("status") or "CAPTURE_FAILED")
+        result = response.get("result")
+        if not isinstance(result, dict) or not isinstance(result.get(list_key, []), list):
+            return [], request_id, "INVALID_INVENTORY_PAGE"
+        out.extend(result.get(list_key, []))
+        if len(out) > 5000:
+            return [], request_id, "INVENTORY_LIMIT_EXCEEDED"
+        cursor = result.get("nextCursor")
+        if not cursor:
+            return out, request_id, None
+        if not isinstance(cursor, str):
+            return [], request_id, "INVALID_CURSOR"
+    return [], request_id, "PAGINATION_LIMIT_EXCEEDED"
+
+
+def run_mcp_observe(_repo_root: Path, params: dict[str, Any], _work: Path) -> dict[str, Any]:
+    endpoint = validate_https_url(str(params.get("endpoint") or ""))
+    max_pages = int(params.get("max_pages", 20) or 20)
+    if max_pages < 1 or max_pages > 100:
+        fail("protocol.mcp.observe max_pages must be 1..100")
+
+    first = _mcp_rpc(endpoint, "server/discover", {}, 1)
+    if not first.get("ok"):
+        return {
+            "capability": "protocol.mcp.observe",
+            "status": "CAPTURE_FAILED",
+            "reason": first.get("status"),
+            "http_status": first.get("http_status"),
+            "redirect_location_observed": first.get("location"),
+            "www_authenticate_observed": first.get("www_authenticate"),
+            "tool_invocation_authority": False,
+            "source_exported": False,
+        }
+    discover = first.get("result")
+    if not isinstance(discover, dict):
+        return {"capability": "protocol.mcp.observe", "status": "CAPTURE_FAILED", "reason": "DISCOVERY_RESULT_INVALID", "tool_invocation_authority": False, "source_exported": False}
+
+    versions = discover.get("supportedVersions", [])
+    capabilities = discover.get("capabilities", {})
+    if not isinstance(versions, list) or not isinstance(capabilities, dict):
+        return {"capability": "protocol.mcp.observe", "status": "CAPTURE_FAILED", "reason": "DISCOVERY_SHAPE_INVALID", "tool_invocation_authority": False, "source_exported": False}
+    if "2026-07-28" not in versions:
+        return {"capability": "protocol.mcp.observe", "status": "UNSUPPORTED", "reason": "MODERN_PROTOCOL_NOT_ADVERTISED", "tool_invocation_authority": False, "source_exported": False}
+
+    server_info = {}
+    meta = discover.get("_meta")
+    if isinstance(meta, dict) and isinstance(meta.get("io.modelcontextprotocol/serverInfo"), dict):
+        server_info = meta["io.modelcontextprotocol/serverInfo"]
+
+    request_id = 2
+    tools: list[Any] = []
+    resources: list[Any] = []
+    prompts: list[Any] = []
+    for cap_name, method, list_key in (
+        ("tools", "tools/list", "tools"),
+        ("resources", "resources/list", "resources"),
+        ("prompts", "prompts/list", "prompts"),
+    ):
+        if cap_name in capabilities:
+            values, request_id, error = _mcp_paginate(endpoint, method, list_key, request_id, max_pages)
+            if error:
+                return {
+                    "capability": "protocol.mcp.observe",
+                    "status": "CAPTURE_FAILED",
+                    "reason": error,
+                    "failed_inventory": cap_name,
+                    "tool_invocation_authority": False,
+                    "source_exported": False,
+                }
+            if cap_name == "tools":
+                tools = values
+            elif cap_name == "resources":
+                resources = values
+            else:
+                prompts = values
+
+    parsed = urlparse(endpoint)
+    snapshot = {
+        "schema": "try-ddc-mcp-observation/1",
+        "observation_complete": True,
+        "endpoint": endpoint,
+        "server": {
+            "name": server_info.get("name"),
+            "version": server_info.get("version"),
+            "protocol_version": "2026-07-28",
+            "supported_versions": versions,
+        },
+        "capabilities": capabilities,
+        "tools": [
+            {
+                "name": item.get("name"),
+                "description": item.get("description"),
+                "input_schema": item.get("inputSchema"),
+                "annotations": item.get("annotations"),
+            }
+            for item in tools if isinstance(item, dict)
+        ],
+        "resources": [
+            {
+                "uri": item.get("uri"),
+                "name": item.get("name"),
+                "description": item.get("description"),
+                "mime_type": item.get("mimeType"),
+            }
+            for item in resources if isinstance(item, dict)
+        ],
+        "prompts": [
+            {
+                "name": item.get("name"),
+                "description": item.get("description"),
+                "arguments": item.get("arguments"),
+            }
+            for item in prompts if isinstance(item, dict)
+        ],
+        "auth": {
+            "www_authenticate": first.get("headers", {}).get("www-authenticate"),
+            "protected_resource_metadata": None,
+            "authorization_server_metadata": None,
+        },
+        "transport": {
+            "scheme": parsed.scheme,
+            "host": parsed.netloc,
+            "tls_cert_sha256": _mcp_tls_certificate_sha256(endpoint),
+            "tls_spki_sha256": None,
+            "redirect_followed": False,
+            "http_protocol": first.get("http_protocol"),
+        },
+        "request_count": request_id - 1,
+        "safety": {
+            "advertised_tools_invoked": False,
+            "advertised_prompts_invoked": False,
+            "resources_read": False,
+            "arbitrary_rpc_invoked": False,
+            "credentials_supplied": False,
+        },
+    }
+    return {
+        "capability": "protocol.mcp.observe",
+        "status": "COMPLETE",
+        "snapshot": snapshot,
+        "snapshot_digest": _v2_digest(snapshot),
+        "tool_invocation_authority": False,
+        "prompt_invocation_authority": False,
+        "resource_read_authority": False,
+        "arbitrary_rpc_authority": False,
+        "source_exported": False,
+    }
+
+
 def run_agent_replay_report(repo_root: Path, params: dict[str, Any], work: Path) -> dict[str, Any]:
     report_rel = str(params.get("path") or "")
     if not report_rel or Path(report_rel).is_absolute():
@@ -668,6 +926,7 @@ RUNNERS = {
     "blockchain.evm.contract.observe": run_evm_contract_observe,
     "blockchain.evm.transaction.observe": run_evm_transaction_observe,
     "agent.replay.report": run_agent_replay_report,
+    "protocol.mcp.observe": run_mcp_observe,
 }
 
 
