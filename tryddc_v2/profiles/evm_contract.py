@@ -101,9 +101,12 @@ def analyze_observation(
     beacon_impl_raw = observation.get("beacon_implementation")
     beacon_impl = normalize_address(beacon_impl_raw) if beacon_impl_raw else None
 
+    proxy_conflict = implementation is not None and beacon is not None
     proxy_kind = "NONE_OBSERVED"
     active_impl = None
-    if implementation is not None:
+    if proxy_conflict:
+        proxy_kind = "CONFLICTING_EIP1967_SLOTS"
+    elif implementation is not None:
         proxy_kind = "EIP1967_IMPLEMENTATION"
         active_impl = implementation
     elif beacon is not None:
@@ -132,7 +135,8 @@ def analyze_observation(
     )
 
     raw_items = [
-        ("evidence:block-anchor", before, "rpc:block-anchor"),
+        ("evidence:block-anchor-before", before, "rpc:block-anchor-before"),
+        ("evidence:block-anchor-after", after, "rpc:block-anchor-after"),
         ("evidence:runtime-code", runtime_code, "rpc:eth_getCode"),
         ("evidence:eip1967-implementation", observation.get("implementation_slot", "0x"), "rpc:eth_getStorageAt"),
         ("evidence:eip1967-admin", observation.get("admin_slot", "0x"), "rpc:eth_getStorageAt"),
@@ -178,7 +182,11 @@ def analyze_observation(
 
     code_present = runtime_code not in {"0x", "0x00"}
     analysis_status = "COMPLETE" if stable_anchor and code_present else "CAPTURE_FAILED"
-    evidentiary_status = "PARTIALLY_ESTABLISHED" if analysis_status == "COMPLETE" else "UNRESOLVED"
+    evidentiary_status = (
+        "CONTRADICTED" if proxy_conflict
+        else "PARTIALLY_ESTABLISHED" if analysis_status == "COMPLETE"
+        else "UNRESOLVED"
+    )
 
     observations = (
         {
@@ -193,7 +201,7 @@ def analyze_observation(
             "finality_state": str(observation.get("finality_state") or "UNRESOLVED"),
             "rpc_source": str(observation.get("rpc_origin") or "unknown"),
             "runtime_code_digest": sha256_digest(runtime_code),
-            "evidence_refs": ["evidence:block-anchor", "evidence:runtime-code"],
+            "evidence_refs": ["evidence:block-anchor-before", "evidence:block-anchor-after", "evidence:runtime-code"],
         },
         {
             "kind": "evm.proxy.topology",
@@ -215,17 +223,27 @@ def analyze_observation(
             "kind": "capture.anchor",
             "status": "CONTRADICTED",
             "detail": "Block anchor changed during capture; the observation is not treated as a stable frozen chain state.",
-            "evidence_refs": ["evidence:block-anchor"],
+            "evidence_refs": ["evidence:block-anchor-before"],
         })
     else:
         determinations.append({
             "kind": "capture.anchor",
             "status": "ESTABLISHED",
             "detail": "The same block number and hash were observed before and after bounded capture.",
-            "evidence_refs": ["evidence:block-anchor"],
+            "evidence_refs": ["evidence:block-anchor-before"],
         })
 
-    if proxy_kind != "NONE_OBSERVED":
+    if proxy_conflict:
+        determinations.append({
+            "kind": "proxy.topology",
+            "status": "CONTRADICTED",
+            "detail": "Both ERC-1967 implementation and beacon slots are non-zero; Try DDC does not choose one silently.",
+            "evidence_refs": [
+                "evidence:eip1967-implementation",
+                "evidence:eip1967-beacon",
+            ],
+        })
+    elif proxy_kind != "NONE_OBSERVED":
         determinations.append({
             "kind": "proxy.topology",
             "status": "ESTABLISHED" if active_impl else "PARTIALLY_ESTABLISHED",
@@ -255,6 +273,8 @@ def analyze_observation(
         limitations.append("No non-empty runtime code was observed at the target address for the pinned block.")
     if not stable_anchor:
         limitations.append("The block anchor changed during capture, so the evidence set is not treated as a stable chain-state observation.")
+    if proxy_conflict:
+        limitations.append("Conflicting non-zero ERC-1967 implementation and beacon slots require review; no active implementation is inferred.")
 
     result_seed = {
         "case_id": case_id,
@@ -274,7 +294,7 @@ def analyze_observation(
         evidence_root=manifest.evidence_root,
         analysis_status=analysis_status,
         evidentiary_status=evidentiary_status,
-        risk_disposition="REVIEW_REQUIRED",
+        risk_disposition="HIGH_RISK_OBSERVED" if proxy_conflict else "REVIEW_REQUIRED",
         analysis_time=analysis_time,
         observations=observations,
         determinations=tuple(determinations),
